@@ -1,0 +1,134 @@
+name: Fork - Validate and build
+
+on:
+  push:
+    branches: [custom]
+  pull_request:
+    branches: [custom]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate; leave empty to validate and publish custom'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: github.repository == '52assert/sub2api'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      ref: ${{ steps.target.outputs.ref }}
+      head: ${{ steps.target.outputs.head }}
+      base: ${{ steps.target.outputs.base }}
+      pr: ${{ steps.target.outputs.pr }}
+      valid: ${{ steps.target.outputs.valid }}
+      report: ${{ steps.target.outputs.report }}
+    steps:
+      - uses: actions/github-script@v8
+        id: target
+        env:
+          INPUT_PR: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const raw = process.env.INPUT_PR || String(context.payload.pull_request?.number || '');
+            const repo = context.repo;
+            if (!raw) {
+              if (context.ref !== 'refs/heads/custom') throw new Error('Run this workflow on custom.');
+              core.setOutput('ref', context.sha);
+              core.setOutput('head', context.sha);
+              core.setOutput('valid', 'true');
+              core.setOutput('report', 'true');
+            } else {
+              if (!/^[1-9][0-9]*$/.test(raw)) throw new Error('Invalid PR number');
+              let pr;
+              for (let attempt = 0; attempt < 10; attempt++) {
+                ({ data: pr } = await github.rest.pulls.get({ ...repo, pull_number: Number(raw) }));
+                if (pr.mergeable !== null) break;
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+              if (pr.state !== 'open' || pr.base.ref !== 'custom') throw new Error('Expected an open PR into custom');
+              const internal = pr.head.repo?.full_name === `${repo.owner}/${repo.repo}`;
+              core.setOutput('pr', raw);
+              core.setOutput('head', pr.head.sha);
+              core.setOutput('base', pr.base.sha);
+              core.setOutput('report', String(internal));
+              if (!pr.mergeable || !pr.merge_commit_sha) {
+                core.setOutput('valid', 'false');
+                core.warning('PR cannot be merged. Resolve conflicts and run validation again.');
+              } else {
+                core.setOutput('ref', pr.merge_commit_sha);
+                core.setOutput('valid', 'true');
+              }
+            }
+            // For external PRs, the normal check runs are available without
+            // granting write credentials to contributor code.
+            const head = raw ? (await github.rest.pulls.get({ ...repo, pull_number: Number(raw) })).data.head : null;
+            if (!raw || head.repo?.full_name === `${repo.owner}/${repo.repo}`) {
+              await github.rest.repos.createCommitStatus({ ...repo,
+                sha: head?.sha || context.sha, state: 'pending', context: 'custom/validation',
+                description: 'Validating the combined custom and upstream code',
+                target_url: `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}` });
+            }
+
+  checks:
+    needs: resolve
+    if: needs.resolve.outputs.valid == 'true'
+    uses: ./.github/workflows/fork-checks.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+
+  result:
+    name: Custom validation result
+    needs: [resolve, checks]
+    if: always() && !cancelled() && needs.resolve.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head }}
+          BASE_SHA: ${{ needs.resolve.outputs.base }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr }}
+          CAN_REPORT: ${{ needs.resolve.outputs.report }}
+          CHECK_RESULT: ${{ needs.checks.result }}
+        with:
+          script: |
+            let ok = process.env.CHECK_RESULT === 'success';
+            if (process.env.PR_NUMBER) {
+              const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: Number(process.env.PR_NUMBER) });
+              ok &&= pr.state === 'open' && pr.head.sha === process.env.HEAD_SHA && pr.base.sha === process.env.BASE_SHA;
+            }
+            if (process.env.CAN_REPORT === 'true') {
+              await github.rest.repos.createCommitStatus({ ...context.repo,
+                sha: process.env.HEAD_SHA, state: ok ? 'success' : 'failure', context: 'custom/validation',
+                description: ok ? 'Tests and builds passed' : 'Checks failed, conflicts exist, or the PR changed; rerun validation',
+                target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` });
+            }
+            if (!ok) core.setFailed('Custom validation did not pass.');
+
+  image:
+    needs: [resolve, checks, result]
+    if: >-
+      github.ref == 'refs/heads/custom' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.pr_number == ''))
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/fork-image.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}

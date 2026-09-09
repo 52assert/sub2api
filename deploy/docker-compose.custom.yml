@@ -1,0 +1,4 @@
+# Combine with docker-compose.local.yml; set SUB2API_IMAGE to an immutable digest.
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:?Set SUB2API_IMAGE to your custom image tag or digest}

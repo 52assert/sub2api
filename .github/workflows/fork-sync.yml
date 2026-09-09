@@ -1,0 +1,35 @@
+name: Fork - Sync upstream
+
+on:
+  schedule:
+    - cron: '23 2 * * *' # 10:23 Asia/Shanghai; GitHub may delay scheduled runs.
+  workflow_dispatch:
+  push:
+    branches: [custom]
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: write
+  statuses: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == '52assert/sub2api' && github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: custom
+          fetch-depth: 0
+          ssh-key: ${{ secrets.UPSTREAM_SYNC_SSH_KEY }}
+      - name: Mirror upstream and open the integration PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash tools/custom/sync-upstream.sh

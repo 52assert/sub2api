@@ -1,0 +1,78 @@
+name: Fork - Publish custom image
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: github.repository == '52assert/sub2api' && github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Set image identity
+        id: meta
+        shell: bash
+        run: |
+          sha=$(git rev-parse HEAD)
+          version=$(tr -d '\r\n' < backend/cmd/server/VERSION)
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=${version}-custom.${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          build-args: |
+            BUILD_TYPE=custom
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.sha }}
+            DATE=${{ steps.meta.outputs.date }}
+            GOPROXY=https://proxy.golang.org,direct
+            GOSUMDB=sum.golang.org
+          cache-from: type=gha,scope=custom-image
+          cache-to: type=gha,mode=max,scope=custom-image
+      - name: Smoke test published image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker pull "$IMAGE@$DIGEST"
+          docker run --rm --entrypoint /app/sub2api "$IMAGE@$DIGEST" -version 2>&1 | tee /tmp/custom-version.txt
+          grep -F -- "$VERSION" /tmp/custom-version.txt
+      - name: Publish verified custom alias
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:custom" "$IMAGE@$DIGEST"
+          echo "Verified image: \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Set \`SUB2API_IMAGE=$IMAGE@$DIGEST\` for deployment." >> "$GITHUB_STEP_SUMMARY"
