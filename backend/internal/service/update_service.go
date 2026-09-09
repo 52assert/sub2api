@@ -61,24 +61,30 @@ type GitHubReleaseClient interface {
 
 // UpdateService handles software updates
 type UpdateService struct {
-	cache          UpdateCache
-	githubClient   GitHubReleaseClient
-	currentVersion string
-	buildType      string // "source" for manual builds, "release" for CI builds
+	containerUpdater *containerUpdateClient
+	cache            UpdateCache
+	githubClient     GitHubReleaseClient
+	currentVersion   string
+	buildType        string // "source" for manual builds, "release" for CI builds
 }
 
 // NewUpdateService creates a new UpdateService
 func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string) *UpdateService {
 	return &UpdateService{
-		cache:          cache,
-		githubClient:   githubClient,
-		currentVersion: version,
-		buildType:      buildType,
+		containerUpdater: newContainerUpdateClient(),
+		cache:            cache,
+		githubClient:     githubClient,
+		currentVersion:   version,
+		buildType:        buildType,
 	}
 }
 
 // UpdateInfo contains update information
 type UpdateInfo struct {
+	UpdateMode     string       `json:"update_mode,omitempty"`
+	Revision       string       `json:"revision,omitempty"`
+	LatestRevision string       `json:"latest_revision,omitempty"`
+	ContainerImage string       `json:"container_image,omitempty"`
 	CurrentVersion string       `json:"current_version"`
 	LatestVersion  string       `json:"latest_version"`
 	HasUpdate      bool         `json:"has_update"`
@@ -132,11 +138,7 @@ type GitHubAsset struct {
 // CheckUpdate checks for available updates
 func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
 	if s.buildType == "custom" {
-		return &UpdateInfo{
-			CurrentVersion: s.currentVersion,
-			LatestVersion:  s.currentVersion,
-			BuildType:      s.buildType,
-		}, nil
+		return s.checkContainerUpdate(ctx, force)
 	}
 	// Try cache first
 	if !force {

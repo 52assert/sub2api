@@ -12,6 +12,10 @@ export interface ReleaseInfo {
 }
 
 export interface VersionInfo {
+  update_mode?: string
+  revision?: string
+  latest_revision?: string
+  container_image?: string
   current_version: string
   latest_version: string
   has_update: boolean
@@ -40,7 +44,22 @@ export async function checkUpdates(force = false): Promise<VersionInfo> {
   return data
 }
 
+export interface ContainerUpdateJob {
+  id: string
+  stage: string
+  message: string
+  version: string
+  revision: string
+  updated_at: number
+}
+
+export async function getContainerUpdateStatus(): Promise<ContainerUpdateJob | null> {
+  const { data } = await apiClient.get<ContainerUpdateJob | null>('/admin/system/container-update', { timeout: 8000 })
+  return data
+}
+
 export interface UpdateResult {
+  job?: ContainerUpdateJob
   message: string
   need_restart: boolean
 }
@@ -73,8 +92,8 @@ const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
  * Perform system update
  * Downloads and applies the latest version
  */
-export async function performUpdate(): Promise<UpdateResult> {
-  const { data } = await apiClient.post<UpdateResult>('/admin/system/update', undefined, {
+export async function performUpdate(image?: string): Promise<UpdateResult> {
+  const { data } = await apiClient.post<UpdateResult>('/admin/system/update', image ? { image } : undefined, {
     timeout: UPDATE_REQUEST_TIMEOUT_MS
   })
   return data

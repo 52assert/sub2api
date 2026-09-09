@@ -45,6 +45,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend exec vitest run src/components/common/__tests__/ContainerUpdatePanel.spec.ts
       - run: make test-frontend
       - run: pnpm --dir frontend run build
 
@@ -78,6 +79,7 @@ jobs:
         run: |
           bash -n tools/custom/sync-upstream.sh
           python3 tools/custom/test_sync.py
+          python3 -m unittest discover -s deploy/updater -p 'test_*.py'
           POSTGRES_PASSWORD=validation-only SUB2API_IMAGE=ghcr.io/52assert/sub2api:validation \
             docker compose -f deploy/docker-compose.local.yml -f deploy/docker-compose.custom.yml config --quiet
       - name: Check existing deployment scripts
