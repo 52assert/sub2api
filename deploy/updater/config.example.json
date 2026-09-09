@@ -1,0 +1,9 @@
+{
+  "deployment_dir": "/root/sub2api-deploy",
+  "project_name": "sub2api-deploy",
+  "container_name": "sub2api",
+  "postgres_container": "sub2api-postgres",
+  "state_dir": "/var/lib/sub2api-updater",
+  "socket_dir": "/var/lib/sub2api-updater/run",
+  "socket_gid": 1000
+}

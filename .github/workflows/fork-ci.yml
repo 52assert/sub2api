@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: fork-ci-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.pr_number != '' }}
 
 jobs:
   resolve:
@@ -127,7 +127,7 @@ jobs:
       github.ref == 'refs/heads/custom' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.pr_number == ''))
     permissions:
-      contents: read
+      contents: write
       packages: write
     uses: ./.github/workflows/fork-image.yml
     with:

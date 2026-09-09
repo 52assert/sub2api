@@ -56,7 +56,8 @@
             </button>
           </div>
 
-          <div class="p-4">
+          <ContainerUpdatePanel v-if="buildType === 'custom'" ref="containerPanel" class="p-4" />
+          <div v-else class="p-4">
             <!-- Loading state -->
             <div v-if="loading" class="flex items-center justify-center py-6">
               <svg class="h-6 w-6 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24">
@@ -638,6 +639,7 @@
 </template>
 
 <script setup lang="ts">
+import ContainerUpdatePanel from './ContainerUpdatePanel.vue'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore, useAppStore } from '@/stores'
@@ -666,6 +668,7 @@ const appStore = useAppStore()
 
 const isAdmin = computed(() => authStore.isAdmin)
 
+const containerPanel = ref<InstanceType<typeof ContainerUpdatePanel> | null>(null)
 const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 
@@ -740,6 +743,10 @@ function closeDropdown() {
 }
 
 async function refreshVersion(force = true) {
+  if (buildType.value === 'custom') {
+    await containerPanel.value?.refresh()
+    return
+  }
   if (!isAdmin.value) return
 
   // Reset update states when refreshing

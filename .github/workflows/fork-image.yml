@@ -8,7 +8,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
           version=$(tr -d '\r\n' < backend/cmd/server/VERSION)
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "version=${version}-custom.${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -76,3 +76,34 @@ jobs:
           docker buildx imagetools create --tag "$IMAGE:custom" "$IMAGE@$DIGEST"
           echo "Verified image: \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
           echo "Set \`SUB2API_IMAGE=$IMAGE@$DIGEST\` for deployment." >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish page update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ steps.meta.outputs.sha }}
+        run: |
+          official=$(gh api repos/Wei-Shaw/sub2api/releases/latest --jq '.tag_name')
+          if [ "$official" != "v$VERSION" ]; then
+            echo "Skipping online release: $VERSION is not the current official stable version ($official)."
+            exit 0
+          fi
+          tag="custom-v${VERSION}-${REVISION:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export MANIFEST_IMAGE="$IMAGE@$DIGEST"
+          python3 - <<'PYMANIFEST'
+          import json, os
+          from pathlib import Path
+          manifest = {"schema": 1, "version": os.environ["VERSION"],
+                      "revision": os.environ["REVISION"], "image": os.environ["MANIFEST_IMAGE"]}
+          Path('/tmp/container-update.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          Path('/tmp/release-notes.md').write_text(
+              '包含定制功能的 Sub2API ' + manifest['version'] + '。\n\n'
+              '页面在线更新会备份数据并重建应用容器，升级期间短暂不可用。\n\n'
+              '源代码提交：`' + manifest['revision'] + '`\n\n'
+              '固定镜像：`' + manifest['image'] + '`\n')
+          PYMANIFEST
+          gh release create "$tag" /tmp/container-update.json \
+            --repo "$GITHUB_REPOSITORY" --target "$REVISION" \
+            --title "Sub2API $VERSION" --notes-file /tmp/release-notes.md \
+            --latest --prerelease=false
