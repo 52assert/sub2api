@@ -23,10 +23,10 @@ git switch -c feature/my-feature
 1. 从官方抓取 `main`，检查 Fork 的 `main` 能否快进；有分叉立即失败，绝不强制覆盖。
 2. 更新本仓库 `main`，为 `main → custom` 创建或复用同一条 PR。
 3. 显式触发 `Fork - Validate and build`，测试该 PR 与当前 `custom` 合并后的提交，不依赖机器人 PR 事件自动触发 CI。
-4. 必需状态 `custom/validation` 通过后，由维护者选择 **Create a merge commit** 合并。仓库关闭 squash、rebase 和自动删除分支。
-5. 合并后验证 `custom`，通过后构建并发布自己的镜像。
+4. 必需状态 `custom/validation` 通过后，工作流再次核对 PR 的来源、分支和已测试的 head/base 提交，自动以 merge commit 合并本仓库 `main → custom` PR；冲突、失败或提交变化时保留 PR 待处理。其他功能 PR 不自动合并。仓库关闭 squash、rebase 和自动删除分支。
+5. 机器人合并后显式触发 `custom` 验证和镜像发布，避免 `GITHUB_TOKEN` 事件不触发后续工作流的问题。
 
-暂未开启自动合并或服务器自动部署。没有冲突并不等于业务兼容；功能开发后应补充关键回归测试。
+已开启上游同步 PR 自动合并；服务器自动部署保持关闭。没有冲突并不等于业务兼容；功能开发后应补充关键回归测试。
 
 GitHub 可能延迟定时任务，公共仓库长期无活动时也可能停用定时任务。可在 Actions 页面重新启用并手动运行。首次验证记录和失败详情同样在 Actions 页面查看。
 
@@ -81,12 +81,12 @@ docker compose --env-file .env -f docker-compose.local.yml -f docker-compose.cus
 
 ## Actions 与凭据
 
-自动创建同步 PR 需要在仓库 **Settings → Actions → General → Workflow permissions** 开启 **Allow GitHub Actions to create and approve pull requests**。GitHub 将创建和审批合并成同一个设置；本仓库的工作流只创建 PR，不提交审批，自动合并保持关闭。若该开关未开启，镜像同步仍可进行，但遇到需要新建 PR 的官方更新时会报权限错误；开启后重新运行同步即可。
+自动创建同步 PR 需要在仓库 **Settings → Actions → General → Workflow permissions** 开启 **Allow GitHub Actions to create and approve pull requests**。GitHub 将创建和审批合并成同一个设置；本仓库的工作流创建 PR、不提交审批；上游同步 PR 在必需检查通过后自动合并。若该开关未开启，镜像同步仍可进行，但遇到需要新建 PR 的官方更新时会报权限错误；开启后重新运行同步即可。
 
 
 - `UPSTREAM_SYNC_SSH_KEY`：仅此仓库的可写 Deploy Key，用于推送上游提交（包括 `.github/workflows` 的改动），不使用个人 PAT。
 - `GITHUB_TOKEN`：按 job 分配权限，创建 PR、显式触发验证、写状态和发布 GHCR 包。测试任务只有读权限，checkout 不保留凭据。
-- `custom` 分支要求 `custom/validation` 成功，禁止强推与删除；允许手动 merge commit，不要求额外审批人。
+- `custom` 分支要求 `custom/validation` 成功，禁止强推与删除；允许 merge commit，不要求额外审批人；仅上游同步 PR 自动合并。
 - `main → custom` 的 PR 刻意不要求把 base 更新到 head，否则会污染官方镜像分支。每次 `custom` 更新会重新同步并验证；验证报告还检查测试期间 base/head 是否变化。
 - 官方 `CI`、`Release`、`CLA Assistant` 工作流在此 Fork 的仓库设置中禁用，文件保留以减少同步冲突。自定义 CI 覆盖后端测试/lint、前端 lint/typecheck/关键测试/build 和部署检查；官方 `Security Scan` 保留启用。
 

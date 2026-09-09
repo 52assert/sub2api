@@ -32,7 +32,7 @@ if [[ -z "$pr_number" ]]; then
   cat > "$body_file" <<'BODY'
 将官方 main 的最新提交合入定制版本，保留上游历史和现有定制功能。
 
-自动验证会测试合并后的代码，包括前后端检查与构建。有冲突或检查失败时，请先处理问题。请使用 **Create a merge commit** 合并；不要 squash、rebase 或删除 main 分支。
+自动验证会测试合并后的代码，包括前后端检查与构建。通过后由验证工作流自动使用 merge commit 合并；有冲突、检查失败或提交变化时停止合并，等待处理。不要 squash、rebase 或删除 main 分支。
 
 合并后会构建此 Fork 的 Docker 镜像。生产环境仍需选择经过验证的固定镜像版本后升级。
 BODY
