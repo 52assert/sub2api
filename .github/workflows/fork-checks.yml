@@ -79,6 +79,7 @@ jobs:
         run: |
           bash -n tools/custom/sync-upstream.sh
           python3 tools/custom/test_sync.py
+          node --test tools/custom/test_auto_merge.cjs
           python3 -m unittest discover -s deploy/updater -p 'test_*.py'
           POSTGRES_PASSWORD=validation-only SUB2API_IMAGE=ghcr.io/52assert/sub2api:validation \
             docker compose -f deploy/docker-compose.local.yml -f deploy/docker-compose.custom.yml config --quiet
