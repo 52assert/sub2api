@@ -79,6 +79,9 @@ docker compose --env-file .env -f docker-compose.local.yml -f docker-compose.cus
 
 ## Actions 与凭据
 
+自动创建同步 PR 需要在仓库 **Settings → Actions → General → Workflow permissions** 开启 **Allow GitHub Actions to create and approve pull requests**。GitHub 将创建和审批合并成同一个设置；本仓库的工作流只创建 PR，不提交审批，自动合并保持关闭。若该开关未开启，镜像同步仍可进行，但遇到需要新建 PR 的官方更新时会报权限错误；开启后重新运行同步即可。
+
+
 - `UPSTREAM_SYNC_SSH_KEY`：仅此仓库的可写 Deploy Key，用于推送上游提交（包括 `.github/workflows` 的改动），不使用个人 PAT。
 - `GITHUB_TOKEN`：按 job 分配权限，创建 PR、显式触发验证、写状态和发布 GHCR 包。测试任务只有读权限，checkout 不保留凭据。
 - `custom` 分支要求 `custom/validation` 成功，禁止强推与删除；允许手动 merge commit，不要求额外审批人。
