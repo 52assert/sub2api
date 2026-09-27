@@ -32,6 +32,7 @@ type CustomResetView struct {
 	Status        string                    `json:"status"`
 	Subscriptions []CustomResetSubscription `json:"subscriptions"`
 	Fingerprint   string                    `json:"fingerprint"`
+	NextCheck     *time.Time                `json:"next_check_at"`
 	LastChecked   *time.Time                `json:"last_checked_at"`
 	PollError     string                    `json:"poll_error"`
 	LastEventAt   *time.Time                `json:"last_event_at"`
@@ -95,7 +96,7 @@ func (s *CustomCodexResetService) Preview(ctx context.Context, id int64) (*Custo
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	if err = s.db.QueryRowContext(ctx, `SELECT checked_at,error FROM custom_codex_reset_poll WHERE id=1`).Scan(&v.LastChecked, &v.PollError); err != nil {
+	if err = s.db.QueryRowContext(ctx, `SELECT checked_at,next_at,error FROM custom_codex_reset_poll WHERE id=1`).Scan(&v.LastChecked, &v.NextCheck, &v.PollError); err != nil {
 		return nil, err
 	}
 	if err = s.db.QueryRowContext(ctx, `SELECT MAX(announced_at) FROM custom_codex_reset_events`).Scan(&v.LastEventAt); err != nil {
@@ -114,6 +115,9 @@ func (s *CustomCodexResetService) Configure(ctx context.Context, id int64, enabl
  ON CONFLICT(account_id) DO UPDATE SET enabled=EXCLUDED.enabled,
  enabled_at=CASE WHEN custom_codex_reset_policy.enabled=EXCLUDED.enabled THEN custom_codex_reset_policy.enabled_at ELSE NOW() END,
  baseline=EXCLUDED.baseline,status=EXCLUDED.status,updated_at=NOW()`, id, enabled, string(snapshot))
+	if err == nil && enabled {
+		return s.recordQuotaHistory(ctx, a)
+	}
 	return err
 }
 
@@ -156,14 +160,23 @@ func beginCustomResetCard(ctx context.Context, db *sql.DB, id int64) (func(), er
 }
 
 // Manual resets clear daily/weekly usage at execution time. Automatic resets
-// subtract only the balances captured on event detection, preserving subsequent
-// charges. Changed window anchors mean another reset already happened: skip it.
+// subtract only the balances recorded at or before the announcement, preserving
+// all later charges, including consumption during polling and verification.
+// Changed window anchors mean another reset already happened: skip it.
 func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation, event, fingerprint string, actor int64) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Lock the job before subscriptions, matching announcement capture order.
+	// A newer announcement may supersede a job while its quota probe is running.
+	var baselineIdentity string
+	if event != "" {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(baseline->>'identity','') FROM custom_codex_reset_jobs WHERE event_id=$1 AND account_id=$2 AND status IN ('pending','awaiting_usage') FOR UPDATE`, event, id).Scan(&baselineIdentity); err != nil {
+			return 0, err
+		}
+	}
 	// Lock group membership against concurrent account edits before preview check.
 	var upstreamAccountID string
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(credentials->>'chatgpt_account_id','') FROM accounts WHERE id=$1 AND deleted_at IS NULL AND platform='openai' AND type='oauth' FOR UPDATE`, id).Scan(&upstreamAccountID); err != nil {
@@ -177,10 +190,6 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 		return 0, infraerrors.Conflict("CODEX_RESET_TARGETS_CHANGED", "Subscriptions changed; refresh the preview")
 	}
 	if event != "" {
-		var baselineIdentity string
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(baseline->>'identity','') FROM custom_codex_reset_jobs WHERE event_id=$1 AND account_id=$2`, event, id).Scan(&baselineIdentity); err != nil {
-			return 0, err
-		}
 		currentIdentity := customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": upstreamAccountID}})
 		if baselineIdentity == "" || baselineIdentity != currentIdentity {
 			return 0, infraerrors.Conflict("CODEX_RESET_IDENTITY_CHANGED", "Upstream account identity changed; manual review required")
@@ -239,14 +248,19 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 			return 0, err
 		}
 		if event == "" {
-			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions SET daily_usage_usd=0,weekly_usage_usd=0,daily_window_start=$2,weekly_window_start=$3,updated_at=NOW() WHERE id=$1`, v.ID, timezone.StartOfDay(now), now)
+			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions SET daily_usage_usd=0,weekly_usage_usd=0,daily_window_start=$2,weekly_window_start=$3,custom_codex_weekly_pending=FALSE,updated_at=NOW() WHERE id=$1`, v.ID, timezone.StartOfDay(now), now)
 		} else {
+			var firstUse *time.Time
+			if err = tx.QueryRowContext(ctx, `SELECT MIN(h.recorded_at) FROM custom_codex_subscription_history h JOIN custom_codex_reset_events e ON e.id=$2 WHERE h.subscription_id=$1 AND h.is_charge AND h.recorded_at>e.announced_at`, v.ID, event).Scan(&firstUse); err != nil {
+				return 0, err
+			}
 			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions us SET
  daily_usage_usd=CASE WHEN us.daily_window_start IS NOT DISTINCT FROM t.daily_start THEN GREATEST(0,us.daily_usage_usd-t.daily_base) ELSE us.daily_usage_usd END,
  weekly_usage_usd=CASE WHEN us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN GREATEST(0,us.weekly_usage_usd-t.weekly_base) ELSE us.weekly_usage_usd END,
- daily_window_start=CASE WHEN us.daily_window_start IS NOT DISTINCT FROM t.daily_start THEN $3 ELSE us.daily_window_start END,
- weekly_window_start=CASE WHEN us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN $4 ELSE us.weekly_window_start END,
- updated_at=NOW() FROM custom_codex_reset_targets t WHERE us.id=$1 AND t.subscription_id=us.id AND t.event_id=$2`, v.ID, event, timezone.StartOfDay(now), now)
+ daily_window_start=CASE WHEN us.daily_window_start IS NOT DISTINCT FROM t.daily_start THEN CASE WHEN t.daily_start IS NULL AND $4::timestamptz IS NULL THEN NULL ELSE $3::timestamptz END ELSE us.daily_window_start END,
+ weekly_window_start=CASE WHEN us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN $4::timestamptz ELSE us.weekly_window_start END,
+ custom_codex_weekly_pending=CASE WHEN us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN $4::timestamptz IS NULL ELSE us.custom_codex_weekly_pending END,
+ updated_at=NOW() FROM custom_codex_reset_targets t WHERE us.id=$1 AND t.subscription_id=us.id AND t.event_id=$2`, v.ID, event, timezone.StartOfDay(now), firstUse)
 		}
 		if err != nil {
 			return 0, err

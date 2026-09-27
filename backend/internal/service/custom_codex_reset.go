@@ -18,8 +18,9 @@ import (
 )
 
 const customCodexResetURL = "https://didcodexreset.com/openapi/v1/records/latest?kind=reset_completed"
-const customCodexResetInterval = time.Minute
+const customCodexResetInterval = 10 * time.Minute
 const customCodexResetThreshold = 1.0
+const customCodexResetEventMaxAge = 24 * time.Hour
 
 type customResetRecord struct {
 	ID          string    `json:"id"`
@@ -77,8 +78,8 @@ func customSnapshot(extra map[string]any) customQuotaSnapshot {
 	return customQuotaSnapshot{At: stamp("codex_usage_updated_at"), Weekly: number("codex_7d_used_percent"), WeeklyMinutes: integer("codex_7d_window_minutes"), WeeklyReset: stamp("codex_7d_reset_at"), FiveHour: number("codex_5h_used_percent"), FiveHourMinutes: integer("codex_5h_window_minutes"), FiveHourReset: stamp("codex_5h_reset_at")}
 }
 
-// Zero-length secondary windows are absent quotas, not proof of a 5h reset.
-// A known weekly quota is mandatory because downstream weekly usage is reset.
+// A pre-announcement weekly snapshot and a clear drop prove a reset even when
+// new usage accumulated during polling delay. Never infer it from 5h rollover.
 func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time) string {
 	if before.Identity == "" || after.Identity != before.Identity {
 		return "account_identity_changed"
@@ -89,10 +90,7 @@ func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time
 	if after.Weekly == nil || after.WeeklyMinutes != 10080 {
 		return "missing_weekly_window"
 	}
-	if *after.Weekly < 0 || *after.Weekly > customCodexResetThreshold {
-		return "usage_not_near_zero"
-	}
-	if after.FiveHourMinutes > 0 && (after.FiveHour == nil || *after.FiveHour < 0 || *after.FiveHour > customCodexResetThreshold) {
+	if *after.Weekly < 0 || *after.Weekly > 100 {
 		return "usage_not_near_zero"
 	}
 	// A baseline from before the announcement avoids mistaking an ordinary window
@@ -100,7 +98,7 @@ func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time
 	if before.At.IsZero() || !before.At.Before(event) || before.Weekly == nil || before.WeeklyMinutes != 10080 {
 		return "missing_baseline"
 	}
-	if *before.Weekly <= customCodexResetThreshold {
+	if *before.Weekly <= customCodexResetThreshold || (*after.Weekly > customCodexResetThreshold && *before.Weekly-*after.Weekly <= customCodexResetThreshold) {
 		return "no_observed_drop"
 	}
 	if before.WeeklyReset.IsZero() || !before.WeeklyReset.After(after.At) {
@@ -125,12 +123,12 @@ func NewCustomCodexResetService(db *sql.DB, accounts AccountRepository, subs *Su
 	return &CustomCodexResetService{db: db, accounts: accounts, subscriptions: subs, tests: tests, client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, ctx: ctx, cancel: cancel}
 }
 func (s *CustomCodexResetService) Start() {
-	// Separate workers: a slow inference probe must not delay the 1-minute feed poll.
+	// Separate workers: a slow inference probe must not delay the scheduled feed poll.
 	for _, run := range []func(context.Context) error{s.poll, s.work} {
 		s.wg.Add(1)
 		go func(run func(context.Context) error) {
 			defer s.wg.Done()
-			ticker := time.NewTicker(customCodexResetInterval)
+			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for {
 				ctx, cancel := context.WithTimeout(s.ctx, 55*time.Second)
@@ -207,15 +205,23 @@ func parseCustomResetRecord(reader io.Reader, now time.Time) (*customResetRecord
 }
 func customResetRetryDelay(failures int, retry string, now time.Time) time.Duration {
 	if secs, err := strconv.Atoi(retry); err == nil && secs > 0 && secs <= 365*24*60*60 {
-		return time.Duration(secs) * time.Second
+		delay := time.Duration(secs) * time.Second
+		if delay < customCodexResetInterval {
+			delay = customCodexResetInterval
+		}
+		return delay
 	}
 	if at, err := http.ParseTime(retry); err == nil && at.After(now) {
-		return at.Sub(now)
+		delay := at.Sub(now)
+		if delay < customCodexResetInterval {
+			delay = customCodexResetInterval
+		}
+		return delay
 	}
 	if failures > 5 {
 		failures = 5
 	}
-	delay := time.Minute * time.Duration(1<<failures)
+	delay := customCodexResetInterval * time.Duration(1<<max(0, failures-1))
 	if delay > 30*time.Minute {
 		delay = 30 * time.Minute
 	}
@@ -270,6 +276,9 @@ func (s *CustomCodexResetService) poll(ctx context.Context) error {
 		failures++
 		delay = customResetRetryDelay(failures, retry, time.Now())
 		message = "feed_unavailable"
+		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			message = "feed_rate_limited"
+		}
 	} else {
 		failures = 0
 	}
@@ -308,24 +317,23 @@ func (s *CustomCodexResetService) observe(ctx context.Context, tx *sql.Tx, e *cu
 		return nil
 	}
 	// Historical events (including the initial latest result) never mutate usage.
-	if time.Since(e.AnnouncedAt) > 2*time.Hour {
+	if time.Since(e.AnnouncedAt) > customCodexResetEventMaxAge {
 		return nil
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO custom_codex_reset_jobs(event_id,account_id,baseline,group_ids)
- SELECT $1,p.account_id,p.baseline,ARRAY(SELECT group_id FROM account_groups WHERE account_id=p.account_id ORDER BY group_id) FROM custom_codex_reset_policy p JOIN accounts a ON a.id=p.account_id
+ SELECT $1,p.account_id,COALESCE((SELECT h.snapshot FROM custom_codex_quota_history h WHERE h.account_id=p.account_id AND h.observed_at<$2 ORDER BY h.observed_at DESC LIMIT 1),
+ CASE WHEN (p.baseline->>'at')::timestamptz<$2 OR p.baseline->>'at' IS NULL THEN p.baseline ELSE '{}'::jsonb END),ARRAY(SELECT group_id FROM account_groups WHERE account_id=p.account_id ORDER BY group_id) FROM custom_codex_reset_policy p JOIN accounts a ON a.id=p.account_id
  WHERE p.enabled AND p.enabled_at<$2 AND a.deleted_at IS NULL AND a.status='active' AND a.platform='openai' AND a.type='oauth'`, e.ID, e.AnnouncedAt)
 	if err != nil {
 		return err
 	}
-	// One target snapshot per event/subscription even when several accounts share a group.
-	_, err = tx.ExecContext(ctx, `INSERT INTO custom_codex_reset_targets(event_id,subscription_id,group_id,reset_revision,daily_base,weekly_base,daily_start,weekly_start)
- SELECT $1,us.id,us.group_id,us.custom_codex_reset_revision,us.daily_usage_usd,us.weekly_usage_usd,us.daily_window_start,us.weekly_window_start
- FROM user_subscriptions us JOIN groups g ON g.id=us.group_id
- WHERE us.deleted_at IS NULL AND g.deleted_at IS NULL AND us.status='active' AND us.starts_at<=$2 AND us.expires_at>NOW()
- AND EXISTS(SELECT 1 FROM account_groups ag JOIN custom_codex_reset_jobs j ON j.account_id=ag.account_id WHERE j.event_id=$1 AND ag.group_id=us.group_id)
- ORDER BY us.id FOR UPDATE OF us`, e.ID, e.AnnouncedAt)
-	return err
+	if _, err = tx.ExecContext(ctx, `UPDATE custom_codex_reset_jobs j SET status='superseded',updated_at=NOW()
+ FROM custom_codex_reset_events old WHERE j.event_id=old.id AND old.announced_at<$1 AND j.status IN ('pending','awaiting_usage')`, e.AnnouncedAt); err != nil {
+		return err
+	}
+	return s.captureTargets(ctx, tx, e)
 }
+
 func (s *CustomCodexResetService) work(ctx context.Context) error {
 	// Transaction-level leader lock covers one worker batch, including probes.
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -339,7 +347,7 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT j.event_id,j.account_id,j.baseline,j.attempts,e.announced_at,e.observed_at
  FROM custom_codex_reset_jobs j JOIN custom_codex_reset_events e ON e.id=j.event_id
- WHERE j.status='pending' AND j.next_at<=NOW() ORDER BY j.next_at,j.account_id LIMIT 4`)
+ WHERE j.status IN ('pending','awaiting_usage') AND j.next_at<=NOW() ORDER BY j.next_at,j.account_id LIMIT 4`)
 	if err != nil {
 		return err
 	}
@@ -369,7 +377,7 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 			return ctx.Err()
 		}
 		var status string
-		if time.Since(j.announced) > 2*time.Hour {
+		if time.Since(j.announced) > customCodexResetEventMaxAge {
 			status = "expired"
 		} else {
 			var baseline customQuotaSnapshot
@@ -382,17 +390,24 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 				status = "pending"
 			}
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET status=$3,updated_at=NOW(),next_at=GREATEST(next_at,NOW()+INTERVAL '1 minute') WHERE event_id=$1 AND account_id=$2`, j.event, j.id, status)
-		if err != nil {
-			return err
+		result, updateErr := s.db.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET status=$3,updated_at=NOW(),next_at=GREATEST(next_at,NOW()+INTERVAL '1 minute') WHERE event_id=$1 AND account_id=$2 AND status IN ('pending','awaiting_usage')`, j.event, j.id, status)
+		if updateErr != nil {
+			return updateErr
+		}
+		changed, countErr := result.RowsAffected()
+		if countErr != nil {
+			return countErr
+		}
+		if changed == 0 {
+			continue
 		}
 		_, err = s.db.ExecContext(ctx, `UPDATE custom_codex_reset_policy SET status=$2,updated_at=NOW() WHERE account_id=$1 AND enabled`, j.id, status)
 		if err != nil {
 			return err
 		}
 	}
-	// Keep a pre-event baseline without overwriting one while verification is pending.
-	rows, err = s.db.QueryContext(ctx, `SELECT p.account_id FROM custom_codex_reset_policy p WHERE p.enabled AND NOT EXISTS(SELECT 1 FROM custom_codex_reset_jobs j WHERE j.account_id=p.account_id AND j.status='pending')`)
+	// Sample quotas every minute even while the feed waits ten minutes or backs off.
+	rows, err = s.db.QueryContext(ctx, `SELECT p.account_id FROM custom_codex_reset_policy p WHERE p.enabled`)
 	if err != nil {
 		return err
 	}
@@ -415,15 +430,11 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 		if e != nil {
 			continue
 		}
-		raw, _ := json.Marshal(customAccountSnapshot(a))
-		if _, err = s.db.ExecContext(ctx, `UPDATE custom_codex_reset_policy SET baseline=$2 WHERE account_id=$1 AND NOT (
- COALESCE((baseline->>'weekly')::numeric,0)>1 AND COALESCE(($2::jsonb->>'weekly')::numeric,100)<=1
- AND COALESCE((baseline->>'weekly_reset')::timestamptz,'epoch')>NOW()
- AND NOT EXISTS(SELECT 1 FROM custom_codex_reset_jobs j WHERE j.account_id=$1 AND j.status<>'pending' AND j.updated_at>COALESCE((custom_codex_reset_policy.baseline->>'at')::timestamptz,'epoch')))`, id, string(raw)); err != nil {
+		if err = s.recordQuotaHistory(ctx, a); err != nil {
 			return err
 		}
 	}
-	return nil
+	return s.pruneHistory(ctx)
 }
 func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event string, announced, observed time.Time, before customQuotaSnapshot, attempts int) (string, error) {
 	conn, release, err := customResetAccountLock(ctx, s.db, id)
@@ -459,7 +470,7 @@ func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event st
 			return "pending", nil
 		}
 		if attempts >= 3 {
-			return "probe_failed", nil
+			return "awaiting_usage", nil
 		}
 		// Persist attempts before I/O so restarts cannot endlessly repeat a paid probe.
 		if _, err = conn.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET attempts=attempts+1,next_at=NOW()+INTERVAL '5 minutes' WHERE event_id=$1 AND account_id=$2`, event, id); err != nil {

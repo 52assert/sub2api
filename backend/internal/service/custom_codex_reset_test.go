@@ -47,12 +47,15 @@ func TestCustomCodexResetEvidence(t *testing.T) {
 		{"stale snapshot", "stale_snapshot", func(_, a *customQuotaSnapshot) { a.At = now.Add(-6 * time.Minute) }},
 		{"missing weekly", "missing_weekly_window", func(_, a *customQuotaSnapshot) { a.Weekly = nil }},
 		{"zero-length weekly", "missing_weekly_window", func(_, a *customQuotaSnapshot) { a.WeeklyMinutes = 0 }},
-		{"high usage", "usage_not_near_zero", func(_, a *customQuotaSnapshot) { a.Weekly = &high }},
+		{"unchanged usage", "no_observed_drop", func(_, a *customQuotaSnapshot) { a.Weekly = &high }},
+		{"partly consumed after reset", "confirmed", func(_, a *customQuotaSnapshot) { value := 12.0; a.Weekly = &value }},
+		{"rounding-sized drop", "no_observed_drop", func(_, a *customQuotaSnapshot) { value := 82.5; a.Weekly = &value }},
+		{"invalid usage", "usage_not_near_zero", func(_, a *customQuotaSnapshot) { value := 101.0; a.Weekly = &value }},
 		{"unknown baseline", "missing_baseline", func(b, _ *customQuotaSnapshot) { b.At = time.Time{} }},
 		{"unknown baseline window", "missing_baseline", func(b, _ *customQuotaSnapshot) { b.WeeklyMinutes = 0 }},
 		{"no drop", "no_observed_drop", func(b, _ *customQuotaSnapshot) { b.Weekly = &low }},
 		{"natural expiry", "natural_reset_possible", func(b, _ *customQuotaSnapshot) { b.WeeklyReset = now.Add(-time.Second) }},
-		{"5h not reset", "usage_not_near_zero", func(_, a *customQuotaSnapshot) { a.FiveHourMinutes = 300; a.FiveHour = &high }},
+		{"5h usage does not disprove weekly drop", "confirmed", func(_, a *customQuotaSnapshot) { a.FiveHourMinutes = 300; a.FiveHour = &high }},
 		{"absent secondary is not evidence", "confirmed", func(_, a *customQuotaSnapshot) { a.FiveHourMinutes = 0; a.FiveHour = nil }},
 	}
 	for _, tc := range cases {
@@ -65,7 +68,9 @@ func TestCustomCodexResetEvidence(t *testing.T) {
 }
 func TestCustomCodexResetBackoff(t *testing.T) {
 	now := time.Now()
-	require.Equal(t, time.Minute, customCodexResetInterval)
+	require.Equal(t, 10*time.Minute, customCodexResetInterval)
+	require.Equal(t, 10*time.Minute, customResetRetryDelay(1, "", now))
+	require.Equal(t, 10*time.Minute, customResetRetryDelay(1, "30", now))
 	require.Equal(t, 30*time.Minute, customResetRetryDelay(20, "", now))
 	require.Equal(t, 2*time.Hour, customResetRetryDelay(1, "7200", now))
 	require.GreaterOrEqual(t, customResetRetryDelay(1, now.Add(time.Hour).UTC().Format(http.TimeFormat), now), 59*time.Minute)

@@ -12,7 +12,7 @@ vi.mock('@/api/admin/accountSubscriptionReset', () => ({
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ locale: { value: 'zh' } }) }))
 const account = { id: 27, name: 'Codex account' } as Account
 function preview() {
-  return { enabled: false, status: 'disabled', fingerprint: 'a'.repeat(64), last_checked_at: null, last_event_at: null, poll_error: '',
+  return { enabled: false, status: 'disabled', fingerprint: 'a'.repeat(64), last_checked_at: null, next_check_at: null, last_event_at: null, poll_error: '',
     subscriptions: [{ id: 3, user_id: 4, group_id: 5, group_name: 'Group', daily_usage_usd: 10, weekly_usage_usd: 40 }] }
 }
 function create() { return mount(AccountSubscriptionResetModal, { props: { show: true, account }, global: { stubs: { BaseDialog: { template: '<div><slot /></div>' } } } }) }
@@ -23,6 +23,15 @@ function button(wrapper: ReturnType<typeof create>, text: string) {
 }
 beforeEach(() => { vi.clearAllMocks(); mocks.preview.mockResolvedValue(preview()); mocks.configure.mockResolvedValue(undefined); mocks.reset.mockResolvedValue(1) })
 describe('account subscription resets', () => {
+  it('explains rate limiting and shows the scheduled retry', async () => {
+    mocks.preview.mockResolvedValue({ ...preview(), enabled: true, poll_error: 'feed_rate_limited', next_check_at: '2026-09-27T09:10:00Z' })
+    const wrapper = create(); await flushPromises()
+    expect(wrapper.text()).toContain('每 10 分钟')
+    expect(wrapper.text()).toContain('公告接口限流')
+    expect(wrapper.text()).toContain('下次查询：')
+    expect(wrapper.text()).not.toContain('公告接口查询失败')
+    wrapper.unmount()
+  })
   it('requires a fresh preview and a second explicit confirmation', async () => {
     const wrapper = create(); await flushPromises()
     expect(mocks.reset).not.toHaveBeenCalled()
