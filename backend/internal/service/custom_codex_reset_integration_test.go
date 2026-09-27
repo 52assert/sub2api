@@ -408,6 +408,8 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.NoError(t, e)
 		require.Equal(t, "awaiting_usage", status)
 		exec(`UPDATE custom_codex_reset_jobs SET status='awaiting_usage',attempts=3 WHERE account_id=1`)
+		// The first request can also perform a daily rollover after an idle night.
+		exec(`UPDATE user_subscriptions SET daily_usage_usd=0,daily_window_start=NOW() WHERE id=1`)
 		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+2,weekly_usage_usd=weekly_usage_usd+2 WHERE id=1`)
 		repo.extra["codex_usage_updated_at"] = time.Now().Format(time.RFC3339)
 		repo.extra["codex_7d_used_percent"] = 12.0
@@ -467,7 +469,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.Equal(t, 4.0, d)
 		require.Equal(t, 4.0, w)
 	})
-	t.Run("existing daily-only reset preserves new charges despite unchanged anchors", func(t *testing.T) {
+	t.Run("daily-only reset preserves daily charges and still compensates weekly usage", func(t *testing.T) {
 		seed()
 		enable()
 		observe("external-reset", time.Now().Add(-time.Minute))
@@ -475,10 +477,10 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+20,weekly_usage_usd=weekly_usage_usd+20 WHERE id=1`)
 		n, e := s.apply(ctx, 1, "official:external-reset", "external-reset", "", 0)
 		require.NoError(t, e)
-		require.Zero(t, n)
+		require.Equal(t, 1, n)
 		d, w, _ := balance(1)
 		require.Equal(t, 20.0, d)
-		require.Equal(t, 60.0, w)
+		require.Equal(t, 20.0, w)
 	})
 	t.Run("historical and out-of-order events do not create jobs", func(t *testing.T) {
 		seed()

@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS custom_codex_subscription_history (
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     reset_revision BIGINT NOT NULL,
     is_charge BOOLEAN NOT NULL DEFAULT FALSE,
+    daily_reset BOOLEAN NOT NULL DEFAULT FALSE,
+    weekly_reset BOOLEAN NOT NULL DEFAULT FALSE,
     daily_usage NUMERIC(20,10) NOT NULL,
     weekly_usage NUMERIC(20,10) NOT NULL,
     daily_start TIMESTAMPTZ,
@@ -22,8 +24,10 @@ BEGIN
        AND NEW.weekly_window_start IS NOT DISTINCT FROM OLD.weekly_window_start THEN
         RETURN NEW;
     END IF;
-    INSERT INTO custom_codex_subscription_history(subscription_id,reset_revision,is_charge,daily_usage,weekly_usage,daily_start,weekly_start)
-    VALUES(NEW.id,NEW.custom_codex_reset_revision,TG_OP='UPDATE' AND (NEW.daily_usage_usd>OLD.daily_usage_usd OR NEW.weekly_usage_usd>OLD.weekly_usage_usd),NEW.daily_usage_usd,NEW.weekly_usage_usd,NEW.daily_window_start,NEW.weekly_window_start);
+    INSERT INTO custom_codex_subscription_history(subscription_id,reset_revision,is_charge,daily_reset,weekly_reset,daily_usage,weekly_usage,daily_start,weekly_start)
+    VALUES(NEW.id,NEW.custom_codex_reset_revision,TG_OP='UPDATE' AND (NEW.daily_usage_usd>OLD.daily_usage_usd OR NEW.weekly_usage_usd>OLD.weekly_usage_usd),
+        TG_OP='UPDATE' AND (NEW.daily_usage_usd<OLD.daily_usage_usd OR NEW.daily_window_start IS DISTINCT FROM OLD.daily_window_start),
+        TG_OP='UPDATE' AND (NEW.weekly_usage_usd<OLD.weekly_usage_usd OR NEW.weekly_window_start IS DISTINCT FROM OLD.weekly_window_start),NEW.daily_usage_usd,NEW.weekly_usage_usd,NEW.daily_window_start,NEW.weekly_window_start);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
