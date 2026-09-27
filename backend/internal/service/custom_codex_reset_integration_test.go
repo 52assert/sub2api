@@ -290,7 +290,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		observe("fresh", eventAt)
 		repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_used_percent": 0.5, "codex_7d_window_minutes": 10080}
 		high := 80.0
-		before := customQuotaSnapshot{At: eventAt.Add(-time.Minute), Weekly: &high, WeeklyReset: time.Now().Add(time.Hour)}
+		before := customQuotaSnapshot{At: eventAt.Add(-time.Minute), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: time.Now().Add(time.Hour)}
 		raw, e := json.Marshal(before)
 		require.NoError(t, e)
 		exec(`UPDATE custom_codex_reset_jobs SET baseline=$1`, string(raw))

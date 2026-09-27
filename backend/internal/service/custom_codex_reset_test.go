@@ -48,6 +48,7 @@ func TestCustomCodexResetEvidence(t *testing.T) {
 		{"zero-length weekly", "missing_weekly_window", func(_, a *customQuotaSnapshot) { a.WeeklyMinutes = 0 }},
 		{"high usage", "usage_not_near_zero", func(_, a *customQuotaSnapshot) { a.Weekly = &high }},
 		{"unknown baseline", "missing_baseline", func(b, _ *customQuotaSnapshot) { b.At = time.Time{} }},
+		{"unknown baseline window", "missing_baseline", func(b, _ *customQuotaSnapshot) { b.WeeklyMinutes = 0 }},
 		{"no drop", "no_observed_drop", func(b, _ *customQuotaSnapshot) { b.Weekly = &low }},
 		{"natural expiry", "natural_reset_possible", func(b, _ *customQuotaSnapshot) { b.WeeklyReset = now.Add(-time.Second) }},
 		{"5h not reset", "usage_not_near_zero", func(_, a *customQuotaSnapshot) { a.FiveHourMinutes = 300; a.FiveHour = &high }},

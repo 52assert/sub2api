@@ -79,7 +79,7 @@ func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time
 	}
 	// A baseline from before the announcement avoids mistaking an ordinary window
 	// rollover (or an already-idle account) for evidence of an exceptional reset.
-	if before.At.IsZero() || !before.At.Before(event) || before.Weekly == nil {
+	if before.At.IsZero() || !before.At.Before(event) || before.Weekly == nil || before.WeeklyMinutes != 10080 {
 		return "missing_baseline"
 	}
 	if *before.Weekly <= customCodexResetThreshold {
