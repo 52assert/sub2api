@@ -300,8 +300,8 @@ func (s *CustomCodexResetService) observe(ctx context.Context, tx *sql.Tx, e *cu
 		return err
 	}
 	// One target snapshot per event/subscription even when several accounts share a group.
-	_, err = tx.ExecContext(ctx, `INSERT INTO custom_codex_reset_targets(event_id,subscription_id,group_id,daily_base,weekly_base,daily_start,weekly_start)
- SELECT $1,us.id,us.group_id,us.daily_usage_usd,us.weekly_usage_usd,us.daily_window_start,us.weekly_window_start
+	_, err = tx.ExecContext(ctx, `INSERT INTO custom_codex_reset_targets(event_id,subscription_id,group_id,reset_revision,daily_base,weekly_base,daily_start,weekly_start)
+ SELECT $1,us.id,us.group_id,us.custom_codex_reset_revision,us.daily_usage_usd,us.weekly_usage_usd,us.daily_window_start,us.weekly_window_start
  FROM user_subscriptions us JOIN groups g ON g.id=us.group_id
  WHERE us.deleted_at IS NULL AND g.deleted_at IS NULL AND us.status='active' AND us.starts_at<=$2 AND us.expires_at>NOW()
  AND EXISTS(SELECT 1 FROM account_groups ag JOIN custom_codex_reset_jobs j ON j.account_id=ag.account_id WHERE j.event_id=$1 AND ag.group_id=us.group_id)
@@ -350,7 +350,7 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		status := "pending"
+		var status string
 		if time.Since(j.announced) > 2*time.Hour {
 			status = "expired"
 		} else {

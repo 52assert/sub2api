@@ -193,17 +193,21 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	}
 	changed := []CustomResetSubscription{}
 	for _, v := range subs {
-		var dayBase, weekBase float64
-		var dayStart, weekStart *time.Time
 		if event != "" {
-			err = tx.QueryRowContext(ctx, `SELECT daily_base,weekly_base,daily_start,weekly_start FROM custom_codex_reset_targets WHERE event_id=$1 AND subscription_id=$2 AND group_id=$3 AND EXISTS(SELECT 1 FROM custom_codex_reset_jobs j WHERE j.event_id=$1 AND j.account_id=$4 AND $3=ANY(j.group_ids))`, event, v.ID, v.GroupID, id).Scan(&dayBase, &weekBase, &dayStart, &weekStart)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
+			var targetUnchanged bool
+			err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM custom_codex_reset_targets t JOIN user_subscriptions us ON us.id=t.subscription_id
+ JOIN custom_codex_reset_jobs j ON j.event_id=t.event_id AND j.account_id=$4
+ WHERE t.event_id=$1 AND t.subscription_id=$2 AND t.group_id=$3 AND $3=ANY(j.group_ids)
+ AND t.reset_revision=us.custom_codex_reset_revision)`, event, v.ID, v.GroupID, id).Scan(&targetUnchanged)
 			if err != nil {
 				return 0, err
 			}
+			if !targetUnchanged {
+				continue
+			}
 		}
+
 		if event != "" {
 			var superseded bool
 			err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM custom_codex_reset_actions a JOIN custom_codex_reset_events e ON e.id=$2 WHERE a.subscription_id=$1 AND a.operation_id<>$3 AND a.created_at>=e.observed_at)`, v.ID, event, operation).Scan(&superseded)

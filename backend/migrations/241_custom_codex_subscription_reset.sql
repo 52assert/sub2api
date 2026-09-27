@@ -1,4 +1,24 @@
--- Fork-owned tables; do not modify upstream subscription schema or monthly usage.
+-- Fork-owned reset tracking. No changes to monthly usage or expiry.
+-- Track ANY daily/weekly reset, including existing admin and natural rollover
+-- paths, without modifying the upstream repository implementations.
+ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS custom_codex_reset_revision BIGINT NOT NULL DEFAULT 0;
+CREATE OR REPLACE FUNCTION custom_codex_subscription_reset_revision() RETURNS trigger AS $$
+BEGIN
+    IF NEW.daily_usage_usd < OLD.daily_usage_usd
+       OR NEW.weekly_usage_usd < OLD.weekly_usage_usd
+       OR NEW.daily_window_start IS DISTINCT FROM OLD.daily_window_start
+       OR NEW.weekly_window_start IS DISTINCT FROM OLD.weekly_window_start THEN
+        NEW.custom_codex_reset_revision := OLD.custom_codex_reset_revision + 1;
+    ELSE
+        NEW.custom_codex_reset_revision := OLD.custom_codex_reset_revision;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS custom_codex_subscription_reset_revision ON user_subscriptions;
+CREATE TRIGGER custom_codex_subscription_reset_revision
+    BEFORE UPDATE OF daily_usage_usd, weekly_usage_usd, daily_window_start, weekly_window_start
+    ON user_subscriptions FOR EACH ROW EXECUTE FUNCTION custom_codex_subscription_reset_revision();
 CREATE TABLE IF NOT EXISTS custom_codex_reset_policy (
     account_id BIGINT PRIMARY KEY REFERENCES accounts(id),
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -36,6 +56,7 @@ CREATE TABLE IF NOT EXISTS custom_codex_reset_targets (
     event_id TEXT NOT NULL REFERENCES custom_codex_reset_events(id),
     subscription_id BIGINT NOT NULL REFERENCES user_subscriptions(id),
     group_id BIGINT NOT NULL,
+    reset_revision BIGINT NOT NULL,
     daily_base NUMERIC(20,10) NOT NULL,
     weekly_base NUMERIC(20,10) NOT NULL,
     daily_start TIMESTAMPTZ,
