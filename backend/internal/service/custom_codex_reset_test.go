@@ -66,6 +66,18 @@ func TestCustomCodexResetEvidence(t *testing.T) {
 		})
 	}
 }
+func TestCustomCodexResetCycleMatchesUpstream(t *testing.T) {
+	firstUse := time.Date(2026, 9, 27, 7, 0, 0, 0, time.FixedZone("Shanghai", 8*60*60))
+	snapshot := customQuotaSnapshot{At: firstUse.Add(time.Hour), WeeklyMinutes: 10080, WeeklyReset: firstUse.Add(7 * 24 * time.Hour)}
+	start, ok := customResetCycleStart(snapshot)
+	require.True(t, ok)
+	require.Equal(t, firstUse, start)
+	for _, reset := range []time.Time{{}, snapshot.At.Add(-time.Minute), snapshot.At.Add(8 * 24 * time.Hour)} {
+		snapshot.WeeklyReset = reset
+		_, ok = customResetCycleStart(snapshot)
+		require.False(t, ok)
+	}
+}
 func TestCustomCodexResetBackoff(t *testing.T) {
 	now := time.Now()
 	require.Equal(t, 10*time.Minute, customCodexResetInterval)

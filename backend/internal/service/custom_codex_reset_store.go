@@ -15,6 +15,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
+var errCustomResetHistoryMissing = errors.New("missing subscription history at compensation boundary")
+
 // These fork-owned tables deliberately keep event deduplication and financial
 // mutations in the same PostgreSQL transaction. Redis is not the source of truth.
 type CustomResetSubscription struct {
@@ -172,8 +174,9 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	// Lock the job before subscriptions, matching announcement capture order.
 	// A newer announcement may supersede a job while its quota probe is running.
 	var baselineIdentity string
+	var cycleStart, compensationAt time.Time
 	if event != "" {
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(baseline->>'identity','') FROM custom_codex_reset_jobs WHERE event_id=$1 AND account_id=$2 AND status IN ('pending','awaiting_usage') FOR UPDATE`, event, id).Scan(&baselineIdentity); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(baseline->>'identity',''),cycle_start,compensation_at FROM custom_codex_reset_jobs WHERE event_id=$1 AND account_id=$2 AND status IN ('pending','awaiting_usage') FOR UPDATE`, event, id).Scan(&baselineIdentity, &cycleStart, &compensationAt); err != nil {
 			return 0, err
 		}
 	}
@@ -212,6 +215,7 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	changed := []CustomResetSubscription{}
 	for _, v := range subs {
 		dailyReset, weeklyReset := false, false
+		var historyID int64
 		if event != "" {
 			var targetUnchanged bool
 			err = tx.QueryRowContext(ctx, `SELECT EXISTS(
@@ -225,11 +229,17 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 			if !targetUnchanged {
 				continue
 			}
+			if err = tx.QueryRowContext(ctx, `SELECT id FROM custom_codex_subscription_history WHERE subscription_id=$1 AND recorded_at<=$2 ORDER BY recorded_at DESC,id DESC LIMIT 1`, v.ID, compensationAt).Scan(&historyID); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return 0, errCustomResetHistoryMissing
+				}
+				return 0, err
+			}
 			// Daily rollover must not suppress the independent weekly refund.
 			// Row locks keep these flags stable until the financial update commits.
 			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(bool_or(h.daily_reset),FALSE),COALESCE(bool_or(h.weekly_reset),FALSE)
- FROM custom_codex_subscription_history h JOIN custom_codex_reset_events e ON e.id=$2
- WHERE h.subscription_id=$1 AND h.recorded_at>e.announced_at`, v.ID, event).Scan(&dailyReset, &weeklyReset); err != nil {
+ FROM custom_codex_subscription_history h
+ WHERE h.subscription_id=$1 AND h.recorded_at>$2`, v.ID, compensationAt).Scan(&dailyReset, &weeklyReset); err != nil {
 				return 0, err
 			}
 			if dailyReset && weeklyReset {
@@ -259,19 +269,22 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 			return 0, err
 		}
 		if event == "" {
-			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions SET daily_usage_usd=0,weekly_usage_usd=0,daily_window_start=$2,weekly_window_start=$3,custom_codex_weekly_pending=FALSE,updated_at=NOW() WHERE id=$1`, v.ID, timezone.StartOfDay(now), now)
+			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions SET daily_usage_usd=0,weekly_usage_usd=0,daily_window_start=$2,weekly_window_start=$3,updated_at=NOW() WHERE id=$1`, v.ID, timezone.StartOfDay(now), now)
 		} else {
-			var firstUse *time.Time
-			if err = tx.QueryRowContext(ctx, `SELECT MIN(h.recorded_at) FROM custom_codex_subscription_history h JOIN custom_codex_reset_events e ON e.id=$2 WHERE h.subscription_id=$1 AND h.is_charge AND h.recorded_at>e.announced_at`, v.ID, event).Scan(&firstUse); err != nil {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO custom_codex_group_cycles(event_id,group_id,cycle_start) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, event, v.GroupID, cycleStart); err != nil {
 				return 0, err
 			}
+			var sharedStart time.Time
+			if err = tx.QueryRowContext(ctx, `SELECT cycle_start FROM custom_codex_group_cycles WHERE event_id=$1 AND group_id=$2`, event, v.GroupID).Scan(&sharedStart); err != nil {
+				return 0, err
+			}
+
 			_, err = tx.ExecContext(ctx, `UPDATE user_subscriptions us SET
- daily_usage_usd=CASE WHEN NOT $5 AND us.daily_window_start IS NOT DISTINCT FROM t.daily_start THEN GREATEST(0,us.daily_usage_usd-t.daily_base) ELSE us.daily_usage_usd END,
- weekly_usage_usd=CASE WHEN NOT $6 AND us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN GREATEST(0,us.weekly_usage_usd-t.weekly_base) ELSE us.weekly_usage_usd END,
- daily_window_start=CASE WHEN NOT $5 AND us.daily_window_start IS NOT DISTINCT FROM t.daily_start THEN CASE WHEN t.daily_start IS NULL AND $4::timestamptz IS NULL THEN NULL ELSE $3::timestamptz END ELSE us.daily_window_start END,
- weekly_window_start=CASE WHEN NOT $6 AND us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN $4::timestamptz ELSE us.weekly_window_start END,
- custom_codex_weekly_pending=CASE WHEN NOT $6 AND us.weekly_window_start IS NOT DISTINCT FROM t.weekly_start THEN $4::timestamptz IS NULL ELSE us.custom_codex_weekly_pending END,
- updated_at=NOW() FROM custom_codex_reset_targets t WHERE us.id=$1 AND t.subscription_id=us.id AND t.event_id=$2`, v.ID, event, timezone.StartOfDay(now), firstUse, dailyReset, weeklyReset)
+ daily_usage_usd=CASE WHEN NOT $5 AND us.daily_window_start IS NOT DISTINCT FROM h.daily_start THEN GREATEST(0,us.daily_usage_usd-h.daily_usage) ELSE us.daily_usage_usd END,
+ weekly_usage_usd=CASE WHEN NOT $6 AND us.weekly_window_start IS NOT DISTINCT FROM h.weekly_start THEN GREATEST(0,us.weekly_usage_usd-h.weekly_usage) ELSE us.weekly_usage_usd END,
+ daily_window_start=CASE WHEN NOT $5 AND us.daily_window_start IS NOT DISTINCT FROM h.daily_start THEN $3::timestamptz ELSE us.daily_window_start END,
+ weekly_window_start=CASE WHEN NOT $6 AND us.weekly_window_start IS NOT DISTINCT FROM h.weekly_start THEN $4::timestamptz ELSE us.weekly_window_start END,
+ updated_at=NOW() FROM custom_codex_subscription_history h WHERE us.id=$1 AND h.subscription_id=us.id AND h.id=$2`, v.ID, historyID, timezone.StartOfDay(now), sharedStart, dailyReset, weeklyReset)
 		}
 		if err != nil {
 			return 0, err

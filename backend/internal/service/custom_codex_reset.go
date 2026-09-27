@@ -80,6 +80,20 @@ func customSnapshot(extra map[string]any) customQuotaSnapshot {
 
 // A pre-announcement weekly snapshot and a clear drop prove a reset even when
 // new usage accumulated during polling delay. Never infer it from 5h rollover.
+func customResetCycleStart(snapshot customQuotaSnapshot) (time.Time, bool) {
+	if snapshot.WeeklyMinutes != 10080 || snapshot.WeeklyReset.IsZero() || !snapshot.WeeklyReset.After(snapshot.At) {
+		return time.Time{}, false
+	}
+	start := snapshot.WeeklyReset.Add(-7 * 24 * time.Hour)
+	if start.After(snapshot.At.Add(time.Minute)) {
+		return time.Time{}, false
+	}
+	if start.After(snapshot.At) {
+		start = snapshot.At
+	}
+	return start, true
+}
+
 func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time) string {
 	if before.Identity == "" || after.Identity != before.Identity {
 		return "account_identity_changed"
@@ -111,19 +125,18 @@ type CustomCodexResetService struct {
 	db            *sql.DB
 	accounts      AccountRepository
 	subscriptions *SubscriptionService
-	tests         *AccountTestService
 	client        *http.Client
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 }
 
-func NewCustomCodexResetService(db *sql.DB, accounts AccountRepository, subs *SubscriptionService, tests *AccountTestService) *CustomCodexResetService {
+func NewCustomCodexResetService(db *sql.DB, accounts AccountRepository, subs *SubscriptionService) *CustomCodexResetService {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &CustomCodexResetService{db: db, accounts: accounts, subscriptions: subs, tests: tests, client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, ctx: ctx, cancel: cancel}
+	return &CustomCodexResetService{db: db, accounts: accounts, subscriptions: subs, client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, ctx: ctx, cancel: cancel}
 }
 func (s *CustomCodexResetService) Start() {
-	// Separate workers: a slow inference probe must not delay the scheduled feed poll.
+	// Independent workers keep billing verification from delaying the feed poll.
 	for _, run := range []func(context.Context) error{s.poll, s.work} {
 		s.wg.Add(1)
 		go func(run func(context.Context) error) {
@@ -436,7 +449,7 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 	}
 	return s.pruneHistory(ctx)
 }
-func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event string, announced, observed time.Time, before customQuotaSnapshot, attempts int) (string, error) {
+func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event string, announced, _ time.Time, before customQuotaSnapshot, _ int) (string, error) {
 	conn, release, err := customResetAccountLock(ctx, s.db, id)
 	if err != nil {
 		return "pending", err
@@ -466,29 +479,59 @@ func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event st
 	}
 	after := customAccountSnapshot(a)
 	if !after.At.After(announced) || time.Since(after.At) > 5*time.Minute {
-		if time.Since(observed) < 2*time.Minute {
-			return "pending", nil
+		return "awaiting_usage", nil
+	}
+	cycleStart, ok := customResetCycleStart(after)
+	if !ok {
+		return "awaiting_usage", nil
+	}
+	// The announcement can lag behind the actual upstream reset. Preserve both
+	// post-announcement charges and all charges in the current upstream cycle.
+	compensationAt := announced
+	if cycleStart.Before(compensationAt) {
+		compensationAt = cycleStart
+	}
+	if compensationAt.Before(announced) {
+		var raw []byte
+		err = s.db.QueryRowContext(ctx, `SELECT snapshot FROM custom_codex_quota_history WHERE account_id=$1 AND observed_at<$2 ORDER BY observed_at DESC LIMIT 1`, id, compensationAt).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "missing_baseline", nil
 		}
-		if attempts >= 3 {
-			return "awaiting_usage", nil
-		}
-		// Persist attempts before I/O so restarts cannot endlessly repeat a paid probe.
-		if _, err = conn.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET attempts=attempts+1,next_at=NOW()+INTERVAL '5 minutes' WHERE event_id=$1 AND account_id=$2`, event, id); err != nil {
-			return "pending", err
-		}
-		after, err = s.tests.probeCustomCodexReset(ctx, id)
 		if err != nil {
 			return "pending", err
 		}
+		if err = json.Unmarshal(raw, &before); err != nil {
+			return "pending", err
+		}
 	}
-	evidence := customResetEvidence(before, after, announced, time.Now())
+
+	if !before.At.IsZero() && before.At.Before(exclusionStart) {
+		if err = conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM custom_codex_reset_card_attempts WHERE account_id=$1 AND attempted_at >= $2)`, id, before.At).Scan(&card); err != nil {
+			return "pending", err
+		}
+		if card {
+			return "reset_card_excluded", nil
+		}
+	}
+
+	evidence := customResetEvidence(before, after, compensationAt, time.Now())
 	if evidence == "usage_not_near_zero" || evidence == "stale_snapshot" {
 		return "pending", nil
 	}
 	if evidence != "confirmed" {
 		return evidence, nil
 	}
+	raw, err := json.Marshal(before)
+	if err != nil {
+		return "pending", err
+	}
+	if _, err = s.db.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET cycle_start=$3,compensation_at=$4,baseline=$5 WHERE event_id=$1 AND account_id=$2 AND status IN ('pending','awaiting_usage')`, event, id, cycleStart, compensationAt, string(raw)); err != nil {
+		return "pending", err
+	}
 	_, err = s.apply(ctx, id, "official:"+event, event, "", 0)
+	if errors.Is(err, errCustomResetHistoryMissing) {
+		return "missing_subscription_history", nil
+	}
 	if err != nil {
 		return "pending", err
 	}

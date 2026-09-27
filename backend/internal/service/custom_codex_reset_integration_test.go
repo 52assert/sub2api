@@ -91,7 +91,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 	}
 	subs := &SubscriptionService{}
 	repo := &customResetAccountRepo{}
-	s := NewCustomCodexResetService(db, repo, subs, nil)
+	s := NewCustomCodexResetService(db, repo, subs)
 	defer s.cancel()
 	balance := func(id int64) (float64, float64, float64) {
 		t.Helper()
@@ -107,6 +107,8 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		record := &customResetRecord{ID: id, AnnouncedAt: announced}
 		require.NoError(t, s.observe(ctx, tx, record))
 		require.NoError(t, tx.Commit())
+		// Direct transaction tests supply an already verified upstream cycle.
+		exec(`UPDATE custom_codex_reset_jobs SET cycle_start=$2,compensation_at=$3 WHERE event_id=$1`, id, announced.Add(30*time.Second), announced)
 	}
 	enable := func() {
 		exec(`INSERT INTO custom_codex_reset_policy(account_id,enabled,enabled_at,baseline) VALUES(1,true,NOW()-INTERVAL '1 hour',$1),(2,true,NOW()-INTERVAL '1 hour',$1)`, fmt.Sprintf(`{"identity":%q}`, customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "stable-id"}})))
@@ -249,6 +251,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		firstUse := time.Now().Add(-7 * time.Minute)
 		exec(`UPDATE custom_codex_subscription_history SET recorded_at=$1 WHERE subscription_id=1 AND daily_usage>15`, firstUse)
 		observe("delayed", eventAt)
+		exec(`UPDATE custom_codex_reset_jobs SET cycle_start=$1 WHERE event_id='delayed'`, firstUse)
 		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+4,weekly_usage_usd=weekly_usage_usd+4 WHERE id=1`)
 		n, e := s.apply(ctx, 1, "official:delayed", "delayed", "", 0)
 		require.NoError(t, e)
@@ -275,29 +278,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.Equal(t, 10.0, d)
 		require.Equal(t, 40.0, w)
 	})
-	t.Run("idle reset starts weekly cycle on first charge and includes that charge", func(t *testing.T) {
-		seed()
-		enable()
-		observe("idle", time.Now().Add(-time.Minute))
-		_, e := s.apply(ctx, 1, "official:idle", "idle", "", 0)
-		require.NoError(t, e)
-		var weeklyStart *time.Time
-		var pending bool
-		require.NoError(t, db.QueryRow(`SELECT weekly_window_start,custom_codex_weekly_pending FROM user_subscriptions WHERE id=1`).Scan(&weeklyStart, &pending))
-		require.Nil(t, weeklyStart)
-		require.True(t, pending)
-		firstUse := time.Now()
-		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+2.5,weekly_usage_usd=weekly_usage_usd+2.5,monthly_usage_usd=monthly_usage_usd+2.5 WHERE id=1`)
-		require.NoError(t, db.QueryRow(`SELECT weekly_window_start,custom_codex_weekly_pending FROM user_subscriptions WHERE id=1`).Scan(&weeklyStart, &pending))
-		require.NotNil(t, weeklyStart)
-		require.WithinDuration(t, firstUse, *weeklyStart, 2*time.Second)
-		require.False(t, pending)
-		d, w, m := balance(1)
-		require.Equal(t, 2.5, d)
-		require.Equal(t, 2.5, w)
-		require.Equal(t, 92.5, m)
-	})
-	t.Run("subscriptions in one group start at their own first consumption", func(t *testing.T) {
+	t.Run("subscriptions in one group share the upstream account cycle", func(t *testing.T) {
 		seed()
 		enable()
 		exec(`INSERT INTO user_subscriptions(id,user_id,group_id,status,starts_at,expires_at,daily_usage_usd,weekly_usage_usd,monthly_usage_usd,daily_window_start,weekly_window_start)
@@ -309,10 +290,11 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		exec(`UPDATE custom_codex_subscription_history SET recorded_at=$1 WHERE subscription_id=1 AND is_charge`, firstA)
 		exec(`UPDATE custom_codex_subscription_history SET recorded_at=$1 WHERE subscription_id=6 AND is_charge`, firstB)
 		observe("separate-starts", eventAt)
+		exec(`UPDATE custom_codex_reset_jobs SET cycle_start=$1 WHERE event_id='separate-starts'`, firstA)
 		n, e := s.apply(ctx, 1, "official:separate-starts", "separate-starts", "", 0)
 		require.NoError(t, e)
 		require.Equal(t, 2, n)
-		for id, want := range map[int64]time.Time{1: firstA, 6: firstB} {
+		for id, want := range map[int64]time.Time{1: firstA, 6: firstA} {
 			var start time.Time
 			require.NoError(t, db.QueryRow(`SELECT weekly_window_start FROM user_subscriptions WHERE id=$1`, id).Scan(&start))
 			require.WithinDuration(t, want, start, time.Microsecond)
@@ -320,22 +302,6 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 			require.Equal(t, 3.0, d)
 			require.Equal(t, 3.0, w)
 		}
-	})
-	t.Run("manual reset supersedes a pending first-use cycle", func(t *testing.T) {
-		seed()
-		enable()
-		observe("idle-manual", time.Now().Add(-time.Minute))
-		_, e := s.apply(ctx, 1, "official:idle-manual", "idle-manual", "", 0)
-		require.NoError(t, e)
-		view, e := s.Preview(ctx, 1)
-		require.NoError(t, e)
-		_, e = s.Manual(ctx, 1, "manual-after-idle", view.Fingerprint, 99)
-		require.NoError(t, e)
-		var before, after time.Time
-		require.NoError(t, db.QueryRow(`SELECT weekly_window_start FROM user_subscriptions WHERE id=1`).Scan(&before))
-		exec(`UPDATE user_subscriptions SET daily_usage_usd=3,weekly_usage_usd=3 WHERE id=1`)
-		require.NoError(t, db.QueryRow(`SELECT weekly_window_start FROM user_subscriptions WHERE id=1`).Scan(&after))
-		require.Equal(t, before, after)
 	})
 	t.Run("quota history keeps pre-announcement evidence after new consumption", func(t *testing.T) {
 		seed()
@@ -347,6 +313,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.NoError(t, s.recordQuotaHistory(ctx, a))
 		repo.extra["codex_usage_updated_at"] = time.Now().Format(time.RFC3339)
 		repo.extra["codex_7d_used_percent"] = 12.0
+		repo.extra["codex_7d_reset_at"] = time.Now().Add(7*24*time.Hour - time.Minute).Format(time.RFC3339)
 		require.NoError(t, s.recordQuotaHistory(ctx, a))
 		observe("history", eventAt)
 		var raw []byte
@@ -392,7 +359,37 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.NoError(t, db.QueryRow(`SELECT daily_base FROM custom_codex_reset_targets WHERE event_id='inflight' AND subscription_id=1`).Scan(&base))
 		require.Equal(t, 17.0, base)
 	})
-	t.Run("first use five hours later resumes verification after exhausted probes", func(t *testing.T) {
+	t.Run("late announcement preserves usage already in the upstream cycle", func(t *testing.T) {
+		seed()
+		enable()
+		cycleStart := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+		eventAt := time.Now().Add(-5 * time.Minute)
+		repo.extra = map[string]any{"codex_usage_updated_at": cycleStart.Add(-time.Minute).Format(time.RFC3339), "codex_7d_used_percent": 80.0, "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339)}
+		a, e := repo.GetByID(ctx, 1)
+		require.NoError(t, e)
+		require.NoError(t, s.recordQuotaHistory(ctx, a))
+		repo.extra["codex_usage_updated_at"] = cycleStart.Add(2 * time.Minute).Format(time.RFC3339)
+		repo.extra["codex_7d_used_percent"] = 5.0
+		repo.extra["codex_7d_reset_at"] = cycleStart.Add(7 * 24 * time.Hour).Format(time.RFC3339)
+		require.NoError(t, s.recordQuotaHistory(ctx, a))
+		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+3,weekly_usage_usd=weekly_usage_usd+3 WHERE id=1`)
+		exec(`UPDATE custom_codex_subscription_history SET recorded_at=$1 WHERE subscription_id=1 AND is_charge`, cycleStart.Add(2*time.Minute))
+		observe("late-announcement", eventAt)
+		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+2,weekly_usage_usd=weekly_usage_usd+2 WHERE id=1`)
+		repo.extra["codex_usage_updated_at"] = time.Now().Format(time.RFC3339)
+		repo.extra["codex_7d_used_percent"] = 12.0
+		require.NoError(t, s.work(ctx))
+		var status string
+		require.NoError(t, db.QueryRow(`SELECT status FROM custom_codex_reset_jobs WHERE event_id='late-announcement' AND account_id=1`).Scan(&status))
+		require.Equal(t, "succeeded", status)
+		d, w, _ := balance(1)
+		require.Equal(t, 5.0, d)
+		require.Equal(t, 5.0, w)
+		var start time.Time
+		require.NoError(t, db.QueryRow(`SELECT weekly_window_start FROM user_subscriptions WHERE id=1`).Scan(&start))
+		require.WithinDuration(t, cycleStart, start, time.Microsecond)
+	})
+	t.Run("first use five hours later verifies without any probe", func(t *testing.T) {
 		seed()
 		enable()
 		exec(`UPDATE custom_codex_reset_policy SET enabled_at=NOW()-INTERVAL '1 day'`)
@@ -404,15 +401,16 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		before := customAccountSnapshot(a)
 		require.NoError(t, s.recordQuotaHistory(ctx, a))
 		observe("late-first-use", eventAt)
-		status, e := s.verify(ctx, 1, "late-first-use", eventAt, eventAt, before, 3)
+		status, e := s.verify(ctx, 1, "late-first-use", eventAt, eventAt, before, 0)
 		require.NoError(t, e)
 		require.Equal(t, "awaiting_usage", status)
-		exec(`UPDATE custom_codex_reset_jobs SET status='awaiting_usage',attempts=3 WHERE account_id=1`)
+		exec(`UPDATE custom_codex_reset_jobs SET status='awaiting_usage',attempts=0 WHERE account_id=1`)
 		// The first request can also perform a daily rollover after an idle night.
 		exec(`UPDATE user_subscriptions SET daily_usage_usd=0,daily_window_start=NOW() WHERE id=1`)
 		exec(`UPDATE user_subscriptions SET daily_usage_usd=daily_usage_usd+2,weekly_usage_usd=weekly_usage_usd+2 WHERE id=1`)
 		repo.extra["codex_usage_updated_at"] = time.Now().Format(time.RFC3339)
 		repo.extra["codex_7d_used_percent"] = 12.0
+		repo.extra["codex_7d_reset_at"] = time.Now().Add(7*24*time.Hour - time.Minute).Format(time.RFC3339)
 		require.NoError(t, s.work(ctx))
 		require.NoError(t, db.QueryRow(`SELECT status FROM custom_codex_reset_jobs WHERE event_id='late-first-use' AND account_id=1`).Scan(&status))
 		require.Equal(t, "succeeded", status)
@@ -497,7 +495,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		enable()
 		eventAt := time.Now().Add(-time.Minute)
 		observe("fresh", eventAt)
-		repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_used_percent": 0.5, "codex_7d_window_minutes": 10080}
+		repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_used_percent": 0.5, "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(7*24*time.Hour - 30*time.Second).Format(time.RFC3339)}
 		high := 80.0
 		before := customQuotaSnapshot{Identity: customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "stable-id"}}), At: eventAt.Add(-time.Minute), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: time.Now().Add(time.Hour)}
 		raw, e := json.Marshal(before)

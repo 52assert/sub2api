@@ -57,21 +57,12 @@ UPDATE custom_codex_reset_jobs SET status='missing_subscription_history',updated
 UPDATE custom_codex_reset_policy p SET status='missing_subscription_history'
 WHERE EXISTS(SELECT 1 FROM custom_codex_reset_jobs j WHERE j.account_id=p.account_id AND j.status='missing_subscription_history');
 
--- An idle subscription starts its renewed weekly cycle on first consumption.
-ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS custom_codex_weekly_pending BOOLEAN NOT NULL DEFAULT FALSE;
-CREATE OR REPLACE FUNCTION custom_codex_activate_weekly_cycle() RETURNS trigger AS $$
-BEGIN
-    IF OLD.custom_codex_weekly_pending AND NEW.weekly_usage_usd>OLD.weekly_usage_usd THEN
-        NEW.weekly_window_start := clock_timestamp();
-        NEW.custom_codex_weekly_pending := FALSE;
-    ELSIF NEW.weekly_window_start IS NOT NULL AND NEW.weekly_window_start IS DISTINCT FROM OLD.weekly_window_start THEN
-        NEW.custom_codex_weekly_pending := FALSE;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS custom_codex_activate_weekly_cycle ON user_subscriptions;
--- BEFORE triggers run alphabetically: activate before calculating the revision.
-CREATE TRIGGER custom_codex_activate_weekly_cycle
-    BEFORE UPDATE OF weekly_usage_usd,weekly_window_start ON user_subscriptions
-    FOR EACH ROW EXECUTE FUNCTION custom_codex_activate_weekly_cycle();
+-- Pin one upstream account cycle per event/group, shared by all subscriptions.
+ALTER TABLE custom_codex_reset_jobs ADD COLUMN IF NOT EXISTS cycle_start TIMESTAMPTZ;
+ALTER TABLE custom_codex_reset_jobs ADD COLUMN IF NOT EXISTS compensation_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS custom_codex_group_cycles (
+    event_id TEXT NOT NULL REFERENCES custom_codex_reset_events(id),
+    group_id BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    cycle_start TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(event_id,group_id)
+);
