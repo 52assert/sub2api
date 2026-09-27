@@ -186,6 +186,7 @@ func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg 
 // It depends on the OpenAI token provider for refreshed access tokens and the
 // privacy client factory for the impersonated upstream HTTP client.
 func ProvideOpenAIQuotaService(
+	db *sql.DB,
 	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	tokenProvider *OpenAITokenProvider,
@@ -194,6 +195,7 @@ func ProvideOpenAIQuotaService(
 	openAIGatewayService *OpenAIGatewayService,
 ) *OpenAIQuotaService {
 	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory, referralClient)
+	service.customResetGuard = func(ctx context.Context, id int64) (func(), error) { return beginCustomResetCard(ctx, db, id) }
 	service.agentIdentityWS = openAIGatewayService
 	return service
 }
@@ -849,6 +851,7 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	ProvideCustomCodexResetService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
@@ -1069,4 +1072,10 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 	}
 	aggregator.Start()
 	return aggregator
+}
+
+func ProvideCustomCodexResetService(db *sql.DB, accounts AccountRepository, subscriptions *SubscriptionService, tests *AccountTestService) *CustomCodexResetService {
+	s := NewCustomCodexResetService(db, accounts, subscriptions, tests)
+	s.Start()
+	return s
 }
