@@ -103,6 +103,7 @@ async function load() {
     if (current !== generation) return
     preview.value = data
     enabled.value = data.enabled
+    return current
   } catch (cause) { if (current === generation) fail(cause) }
   finally { if (current === generation) loading.value = false }
 }
@@ -114,8 +115,9 @@ async function save() {
   catch (cause) { fail(cause) } finally { busy.value = false }
 }
 async function prepareReset() {
-  await load()
-  if (error.value || !preview.value?.subscriptions.length) return
+  if (busy.value || !props.show) return
+  const preparedGeneration = await load()
+  if (preparedGeneration !== generation || !props.show || error.value || !preview.value?.subscriptions.length) return
   if (typeof crypto.randomUUID === 'function') operationID = crypto.randomUUID()
   else {
     const bytes = crypto.getRandomValues(new Uint8Array(16))
