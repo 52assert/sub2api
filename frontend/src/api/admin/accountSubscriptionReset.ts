@@ -5,6 +5,7 @@ export interface SubscriptionResetPreview {
   status: string
   fingerprint: string
   last_checked_at: string | null
+  next_check_at: string | null
   last_event_at: string | null
   poll_error: string
   subscriptions: Array<{

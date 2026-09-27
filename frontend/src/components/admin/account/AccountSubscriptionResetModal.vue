@@ -18,7 +18,8 @@
           <p>{{ words.state }}{{ stateLabel }}</p>
           <p v-if="preview.last_checked_at">{{ words.lastCheck }}{{ formatTime(preview.last_checked_at) }}</p>
           <p v-if="preview.last_event_at">{{ words.lastEvent }}{{ formatTime(preview.last_event_at) }}</p>
-          <p v-if="preview.poll_error" role="alert" class="text-amber-600">{{ words.pollError }}</p>
+          <p v-if="preview.poll_error" role="alert" class="text-amber-600">{{ preview.poll_error === 'feed_rate_limited' ? words.rateLimited : words.pollError }}</p>
+          <p v-if="preview.enabled && preview.next_check_at">{{ words.nextCheck }}{{ formatTime(preview.next_check_at) }}</p>
         </div>
         <p>{{ words.targets }} ({{ preview.subscriptions.length }})</p>
         <div class="max-h-64 overflow-auto">
@@ -56,17 +57,17 @@ const { locale } = useI18n()
 const zh = computed(() => locale.value.startsWith('zh'))
 const words = computed(() => zh.value ? {
   title: '重置关联订阅', scope: '范围：该账号所在分组的全部有效用户订阅。仅重置日额度、周额度；月额度和到期时间不变。',
-  auto: '官方全局重置后自动联动', automaticDetails: '每分钟统一查询公告。确认公告后的周用量降至 ≤1% 后执行；无新快照时使用 gpt-6-astra / medium 发送 hi 探测。首次开启不处理历史公告。自动重置保留检测到公告后新增的消费。',
+  auto: '官方全局重置后自动联动', automaticDetails: '每 10 分钟统一查询公告。公告后周用量接近零或相较公告前明确下降时执行；无新快照时等待正常使用，不主动发送探测。首次开启不处理历史公告。按公告时间补偿日、周额度，保留公告后新增的消费；同一分组订阅共用上游账号的周周期起点，按上游窗口时间对齐，首笔消费也计入已用。',
   creditWarning: '系统内手动或自动使用重置卡不会联动订阅。在官方页面用卡无法可靠识别，建议暂停此开关后操作；证据不足时不自动重置。',
-  save: '保存自动设置', state: '状态：', lastCheck: '最近查询：', lastEvent: '最近公告：', pollError: '公告接口查询失败，将退避重试。',
+  save: '保存自动设置', state: '状态：', lastCheck: '最近查询：', lastEvent: '最近公告：', pollError: '公告接口查询失败，将退避重试。', rateLimited: '公告接口限流，正在等待上游允许重试。', nextCheck: '下次查询：',
   targets: '受影响的有效订阅', subscription: '订阅', user: '用户', group: '分组', daily: '日已用', weekly: '周已用', empty: '没有关联的有效订阅。',
   manual: '手动重置日、周额度', confirm: '确认重置全部所列订阅', confirmWarning: '将清零上面所有有效订阅当前的日、周已用额度。这不是使用上游重置卡，也不会改动账号上游额度。',
   cancel: '取消', refresh: '刷新', loading: '加载中…', saved: '自动联动设置已保存。', done: '已重置订阅数：', failed: '操作失败，请刷新后重试。'
 } : {
   title: 'Reset linked subscriptions', scope: 'All active user subscriptions in this account’s groups. Reset daily and weekly usage only; monthly usage and expiry remain unchanged.',
-  auto: 'Link official global resets automatically', automaticDetails: 'Poll once a minute. Require a fresh weekly quota drop to ≤1%. If needed, probe with hi using gpt-6-astra / medium. Ignore announcements predating activation. Preserve charges incurred after event detection.',
+  auto: 'Link official global resets automatically', automaticDetails: 'Poll every 10 minutes. Require fresh weekly usage near zero or a clear drop from the pre-announcement snapshot. Wait for normal traffic; never send automatic probes. Ignore announcements predating activation. Compensate daily and weekly usage as of the announcement, preserving all later charges. Subscriptions in the same group share the verified upstream account cycle; the first charge counts toward usage.',
   creditWarning: 'Local manual/automatic reset cards never trigger subscription resets. Cards used on the official website cannot reliably be identified; disable this option before using them. Inconclusive evidence is not applied.',
-  save: 'Save automatic settings', state: 'Status: ', lastCheck: 'Last check: ', lastEvent: 'Last announcement: ', pollError: 'Feed query failed; retrying with backoff.',
+  save: 'Save automatic settings', state: 'Status: ', lastCheck: 'Last check: ', lastEvent: 'Last announcement: ', pollError: 'Feed query failed; retrying with backoff.', rateLimited: 'Feed rate limit reached; waiting until retry is allowed.', nextCheck: 'Next check: ',
   targets: 'Affected active subscriptions', subscription: 'Subscription', user: 'User', group: 'Group', daily: 'Daily usage', weekly: 'Weekly usage', empty: 'No linked active subscriptions.',
   manual: 'Reset daily and weekly usage', confirm: 'Confirm reset of all listed subscriptions', confirmWarning: 'Clear current daily and weekly usage for all subscriptions listed above. This does not consume an upstream reset card or change upstream quota.',
   cancel: 'Cancel', refresh: 'Refresh', loading: 'Loading…', saved: 'Automatic settings saved.', done: 'Subscriptions reset: ', failed: 'Operation failed. Refresh and retry.'
@@ -83,9 +84,11 @@ let generation = 0
 const states: Record<string, [string, string]> = {
   disabled: ['未启用', 'Disabled'], watching: ['等待新公告', 'Watching'], pending: ['等待新用量确认', 'Awaiting quota verification'],
   succeeded: ['联动重置完成', 'Reset completed'], reset_card_excluded: ['已排除：存在用卡尝试', 'Excluded: reset card attempt'],
+  awaiting_usage: ['等待正常使用返回账号额度及周期', 'Awaiting account quota and cycle from normal traffic'], superseded: ['已被更新的公告取代', 'Superseded by a newer announcement'],
   expired: ['核验超时，未重置', 'Verification expired'], probe_failed: ['探测失败，未重置', 'Probe failed'],
   missing_baseline: ['缺少公告前用量，待人工确认', 'Missing baseline'], no_observed_drop: ['未观察到明确下降，待人工确认', 'No observed usage drop'],
   natural_reset_possible: ['可能为自然重置，待人工确认', 'Possible natural rollover'], missing_weekly_window: ['缺少周额度数据，待人工确认', 'Missing weekly quota'],
+  missing_subscription_history: ['缺少公告前订阅金额记录，待人工确认', 'Missing pre-announcement subscription history'],
   account_identity_changed: ['上游账号身份缺失或已变更，待人工确认', 'Upstream identity missing or changed'],
   unsupported_account: ['账号类型不支持', 'Unsupported account'], inactive_account: ['账号已停用', 'Inactive account']
 }
@@ -103,6 +106,7 @@ async function load() {
     if (current !== generation) return
     preview.value = data
     enabled.value = data.enabled
+    return current
   } catch (cause) { if (current === generation) fail(cause) }
   finally { if (current === generation) loading.value = false }
 }
@@ -114,8 +118,9 @@ async function save() {
   catch (cause) { fail(cause) } finally { busy.value = false }
 }
 async function prepareReset() {
-  await load()
-  if (error.value || !preview.value?.subscriptions.length) return
+  if (busy.value || !props.show) return
+  const preparedGeneration = await load()
+  if (preparedGeneration !== generation || !props.show || error.value || !preview.value?.subscriptions.length) return
   if (typeof crypto.randomUUID === 'function') operationID = crypto.randomUUID()
   else {
     const bytes = crypto.getRandomValues(new Uint8Array(16))
