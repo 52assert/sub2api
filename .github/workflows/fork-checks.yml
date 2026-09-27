@@ -45,7 +45,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm --dir frontend install --frozen-lockfile
-      - run: pnpm --dir frontend exec vitest run src/components/common/__tests__/ContainerUpdatePanel.spec.ts
+      - run: pnpm --dir frontend exec vitest run src/components/common/__tests__/ContainerUpdatePanel.spec.ts src/components/admin/account/__tests__/AccountSubscriptionResetModal.spec.ts
       - run: make test-frontend
       - run: pnpm --dir frontend run build
 
