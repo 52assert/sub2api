@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ type customResetRecord struct {
 	} `json:"scope"`
 }
 type customQuotaSnapshot struct {
+	Identity        string    `json:"identity"`
 	At              time.Time `json:"at"`
 	Weekly          *float64  `json:"weekly"`
 	WeeklyMinutes   int       `json:"weekly_minutes"`
@@ -39,6 +42,18 @@ type customQuotaSnapshot struct {
 	FiveHourReset   time.Time `json:"five_hour_reset"`
 }
 
+func customResetIdentity(a *Account) string {
+	if a == nil || a.GetChatGPTAccountID() == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(a.GetChatGPTAccountID()))
+	return hex.EncodeToString(sum[:])
+}
+func customAccountSnapshot(a *Account) customQuotaSnapshot {
+	v := customSnapshot(a.Extra)
+	v.Identity = customResetIdentity(a)
+	return v
+}
 func customSnapshot(extra map[string]any) customQuotaSnapshot {
 	number := func(k string) *float64 {
 		v, ok := extra[k].(float64)
@@ -65,6 +80,9 @@ func customSnapshot(extra map[string]any) customQuotaSnapshot {
 // Zero-length secondary windows are absent quotas, not proof of a 5h reset.
 // A known weekly quota is mandatory because downstream weekly usage is reset.
 func customResetEvidence(before, after customQuotaSnapshot, event, now time.Time) string {
+	if before.Identity == "" || after.Identity != before.Identity {
+		return "account_identity_changed"
+	}
 	if !after.At.After(event) || after.At.Before(now.Add(-5*time.Minute)) || after.At.After(now.Add(time.Minute)) {
 		return "stale_snapshot"
 	}
@@ -397,7 +415,7 @@ func (s *CustomCodexResetService) work(ctx context.Context) error {
 		if e != nil {
 			continue
 		}
-		raw, _ := json.Marshal(customSnapshot(a.Extra))
+		raw, _ := json.Marshal(customAccountSnapshot(a))
 		if _, err = s.db.ExecContext(ctx, `UPDATE custom_codex_reset_policy SET baseline=$2 WHERE account_id=$1 AND NOT (
  COALESCE((baseline->>'weekly')::numeric,0)>1 AND COALESCE(($2::jsonb->>'weekly')::numeric,100)<=1
  AND COALESCE((baseline->>'weekly_reset')::timestamptz,'epoch')>NOW()
@@ -435,7 +453,7 @@ func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event st
 	if a.Status != "active" {
 		return "inactive_account", nil
 	}
-	after := customSnapshot(a.Extra)
+	after := customAccountSnapshot(a)
 	if !after.At.After(announced) || time.Since(after.At) > 5*time.Minute {
 		if time.Since(observed) < 2*time.Minute {
 			return "pending", nil

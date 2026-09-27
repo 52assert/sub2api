@@ -946,7 +946,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
-	captureCustomResetHeaders(ctx, resp.Header)
+	captureCustomResetHeaders(ctx, resp.Header, credentialAccount)
 
 	if isOAuth && s.accountRepo != nil {
 		if updates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(updates) > 0 {

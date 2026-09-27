@@ -108,7 +108,7 @@ func (s *CustomCodexResetService) Configure(ctx context.Context, id int64, enabl
 	if err != nil {
 		return err
 	}
-	snapshot, _ := json.Marshal(customSnapshot(a.Extra))
+	snapshot, _ := json.Marshal(customAccountSnapshot(a))
 	_, err = s.db.ExecContext(ctx, `INSERT INTO custom_codex_reset_policy(account_id,enabled,baseline,status)
  VALUES($1,$2,$3,CASE WHEN $2 THEN 'watching' ELSE 'disabled' END)
  ON CONFLICT(account_id) DO UPDATE SET enabled=EXCLUDED.enabled,
@@ -165,7 +165,8 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	}
 	defer func() { _ = tx.Rollback() }()
 	// Lock group membership against concurrent account edits before preview check.
-	if _, err = tx.ExecContext(ctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id); err != nil {
+	var upstreamAccountID string
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(credentials->>'chatgpt_account_id','') FROM accounts WHERE id=$1 AND deleted_at IS NULL AND platform='openai' AND type='oauth' FOR UPDATE`, id).Scan(&upstreamAccountID); err != nil {
 		return 0, err
 	}
 	subs, err := customResetSubscriptions(ctx, tx, id, true)
@@ -176,6 +177,14 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 		return 0, infraerrors.Conflict("CODEX_RESET_TARGETS_CHANGED", "Subscriptions changed; refresh the preview")
 	}
 	if event != "" {
+		var baselineIdentity string
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(baseline->>'identity','') FROM custom_codex_reset_jobs WHERE event_id=$1 AND account_id=$2`, event, id).Scan(&baselineIdentity); err != nil {
+			return 0, err
+		}
+		currentIdentity := customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": upstreamAccountID}})
+		if baselineIdentity == "" || baselineIdentity != currentIdentity {
+			return 0, infraerrors.Conflict("CODEX_RESET_IDENTITY_CHANGED", "Upstream account identity changed; manual review required")
+		}
 		var allowed bool
 		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM custom_codex_reset_policy p JOIN custom_codex_reset_events e ON e.id=$2 WHERE p.account_id=$1 AND p.enabled AND p.enabled_at < e.announced_at)
  AND NOT EXISTS(SELECT 1 FROM custom_codex_reset_card_attempts c JOIN custom_codex_reset_events e ON e.id=$2 WHERE c.account_id=$1 AND c.attempted_at >= LEAST(e.announced_at - INTERVAL '10 minutes', (SELECT (j.baseline->>'at')::timestamptz FROM custom_codex_reset_jobs j WHERE j.event_id=e.id AND j.account_id=$1)))`, id, event).Scan(&allowed)

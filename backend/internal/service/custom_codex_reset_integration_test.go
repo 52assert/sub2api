@@ -33,7 +33,7 @@ type customResetAccountRepo struct {
 }
 
 func (r *customResetAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
-	return &Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: "active", Extra: r.extra}, nil
+	return &Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: "active", Credentials: map[string]any{"chatgpt_account_id": "stable-id"}, Extra: r.extra}, nil
 }
 func TestCustomCodexResetTransactions(t *testing.T) {
 	ctx := context.Background()
@@ -66,7 +66,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 	db = scoped
 	_ = original.Close()
 	// This test DSN is a disposable database only, never an application database.
-	_, err = db.Exec(`CREATE TABLE accounts(id BIGINT PRIMARY KEY,platform TEXT,type TEXT,status TEXT,deleted_at TIMESTAMPTZ);
+	_, err = db.Exec(`CREATE TABLE accounts(id BIGINT PRIMARY KEY,platform TEXT,type TEXT,status TEXT,credentials JSONB DEFAULT '{"chatgpt_account_id":"stable-id"}',deleted_at TIMESTAMPTZ);
  CREATE TABLE groups(id BIGINT PRIMARY KEY,name TEXT,deleted_at TIMESTAMPTZ);
  CREATE TABLE account_groups(account_id BIGINT REFERENCES accounts(id),group_id BIGINT REFERENCES groups(id),PRIMARY KEY(account_id,group_id));
  CREATE TABLE user_subscriptions(id BIGINT PRIMARY KEY,user_id BIGINT,group_id BIGINT,status TEXT,starts_at TIMESTAMPTZ,expires_at TIMESTAMPTZ,deleted_at TIMESTAMPTZ,daily_usage_usd NUMERIC(20,10),weekly_usage_usd NUMERIC(20,10),monthly_usage_usd NUMERIC(20,10),daily_window_start TIMESTAMPTZ,weekly_window_start TIMESTAMPTZ,updated_at TIMESTAMPTZ);`)
@@ -106,7 +106,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.NoError(t, tx.Commit())
 	}
 	enable := func() {
-		exec(`INSERT INTO custom_codex_reset_policy(account_id,enabled,enabled_at) VALUES(1,true,NOW()-INTERVAL '1 hour'),(2,true,NOW()-INTERVAL '1 hour')`)
+		exec(`INSERT INTO custom_codex_reset_policy(account_id,enabled,enabled_at,baseline) VALUES(1,true,NOW()-INTERVAL '1 hour',$1),(2,true,NOW()-INTERVAL '1 hour',$1)`, fmt.Sprintf(`{"identity":%q}`, customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "stable-id"}})))
 	}
 	t.Run("poll is shared across instances and respects Retry-After", func(t *testing.T) {
 		seed()
@@ -183,6 +183,16 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		require.Zero(t, n)
 		exec(`ALTER TABLE user_subscriptions DROP CONSTRAINT reject_test_reset`)
 	})
+	t.Run("deleted account cannot reset group subscriptions", func(t *testing.T) {
+		seed()
+		view, e := s.Preview(ctx, 1)
+		require.NoError(t, e)
+		exec(`UPDATE accounts SET deleted_at=NOW() WHERE id=1`)
+		_, e = s.Manual(ctx, 1, "deleted", view.Fingerprint, 99)
+		require.Error(t, e)
+		d, _, _ := balance(1)
+		require.Equal(t, 10.0, d)
+	})
 	t.Run("preview membership changes fail closed", func(t *testing.T) {
 		seed()
 		view, e := s.Preview(ctx, 1)
@@ -221,6 +231,17 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		var count int
 		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM custom_codex_reset_actions`).Scan(&count))
 		require.Equal(t, 1, count)
+	})
+	t.Run("reauthorization after verification blocks official apply", func(t *testing.T) {
+		seed()
+		enable()
+		observe("reauthorized", time.Now().Add(-time.Minute))
+		exec(`UPDATE accounts SET credentials='{"chatgpt_account_id":"replacement"}' WHERE id=1`)
+		_, e := s.apply(ctx, 1, "official:reauthorized", "reauthorized", "", 0)
+		require.Error(t, e)
+		d, w, _ := balance(1)
+		require.Equal(t, 10.0, d)
+		require.Equal(t, 40.0, w)
 	})
 	t.Run("card attempt blocks official apply and never resets subscription", func(t *testing.T) {
 		seed()
@@ -290,7 +311,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		observe("fresh", eventAt)
 		repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_used_percent": 0.5, "codex_7d_window_minutes": 10080}
 		high := 80.0
-		before := customQuotaSnapshot{At: eventAt.Add(-time.Minute), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: time.Now().Add(time.Hour)}
+		before := customQuotaSnapshot{Identity: customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "stable-id"}}), At: eventAt.Add(-time.Minute), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: time.Now().Add(time.Hour)}
 		raw, e := json.Marshal(before)
 		require.NoError(t, e)
 		exec(`UPDATE custom_codex_reset_jobs SET baseline=$1`, string(raw))

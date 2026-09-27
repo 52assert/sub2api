@@ -31,10 +31,11 @@ func (s *AccountTestService) probeCustomCodexReset(ctx context.Context, id int64
 	}
 	return capture.snapshot, nil
 }
-func captureCustomResetHeaders(ctx context.Context, header http.Header) {
+func captureCustomResetHeaders(ctx context.Context, header http.Header, account *Account) {
 	if capture := customResetProbe(ctx); capture != nil {
 		if snap := ParseCodexRateLimitHeaders(header); snap != nil {
 			capture.snapshot = customSnapshot(buildCodexUsageExtraUpdates(snap, time.Now()))
+			capture.snapshot.Identity = customResetIdentity(account)
 		}
 	}
 }

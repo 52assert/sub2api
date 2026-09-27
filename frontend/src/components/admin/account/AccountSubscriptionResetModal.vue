@@ -86,6 +86,7 @@ const states: Record<string, [string, string]> = {
   expired: ['核验超时，未重置', 'Verification expired'], probe_failed: ['探测失败，未重置', 'Probe failed'],
   missing_baseline: ['缺少公告前用量，待人工确认', 'Missing baseline'], no_observed_drop: ['未观察到明确下降，待人工确认', 'No observed usage drop'],
   natural_reset_possible: ['可能为自然重置，待人工确认', 'Possible natural rollover'], missing_weekly_window: ['缺少周额度数据，待人工确认', 'Missing weekly quota'],
+  account_identity_changed: ['上游账号身份缺失或已变更，待人工确认', 'Upstream identity missing or changed'],
   unsupported_account: ['账号类型不支持', 'Unsupported account'], inactive_account: ['账号已停用', 'Inactive account']
 }
 const stateLabel = computed(() => states[preview.value?.status || 'disabled']?.[zh.value ? 0 : 1] || preview.value?.status)

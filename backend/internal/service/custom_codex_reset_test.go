@@ -35,13 +35,14 @@ func TestCustomCodexResetEvidence(t *testing.T) {
 	now := time.Now()
 	announced := now.Add(-time.Minute)
 	high, low := 83.0, 0.5
-	before := customQuotaSnapshot{At: announced.Add(-time.Hour), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: now.Add(48 * time.Hour)}
-	after := customQuotaSnapshot{At: now, Weekly: &low, WeeklyMinutes: 10080}
+	before := customQuotaSnapshot{Identity: "same-account", At: announced.Add(-time.Hour), Weekly: &high, WeeklyMinutes: 10080, WeeklyReset: now.Add(48 * time.Hour)}
+	after := customQuotaSnapshot{Identity: "same-account", At: now, Weekly: &low, WeeklyMinutes: 10080}
 	require.Equal(t, "confirmed", customResetEvidence(before, after, announced, now))
 	cases := []struct {
 		name, want string
 		alter      func(*customQuotaSnapshot, *customQuotaSnapshot)
 	}{
+		{"changed upstream account", "account_identity_changed", func(_, a *customQuotaSnapshot) { a.Identity = "different-account" }},
 		{"pre-event snapshot", "stale_snapshot", func(_, a *customQuotaSnapshot) { a.At = announced }},
 		{"stale snapshot", "stale_snapshot", func(_, a *customQuotaSnapshot) { a.At = now.Add(-6 * time.Minute) }},
 		{"missing weekly", "missing_weekly_window", func(_, a *customQuotaSnapshot) { a.Weekly = nil }},
