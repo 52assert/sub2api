@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,14 +51,20 @@ func (s *CustomCodexResetService) probeNaturalWindows(ctx context.Context) error
 	return nil
 }
 
-func customCodexNaturalWindowDue(a *Account, now time.Time) (time.Time, bool) {
+func customCodexWindowProbeBoundary(a *Account, now time.Time) (string, *time.Time) {
 	if a == nil || a.Status != "active" || customResetIdentity(a) == "" {
-		return time.Time{}, false
+		return "", nil
 	}
 	snapshot := customAccountSnapshot(a)
-	return snapshot.WeeklyReset, snapshot.WeeklyMinutes == 10080 &&
-		!snapshot.At.IsZero() && snapshot.WeeklyReset.After(snapshot.At) &&
-		!snapshot.WeeklyReset.After(now)
+	if snapshot.WeeklyMinutes != 10080 || snapshot.At.IsZero() || !snapshot.WeeklyReset.After(snapshot.At) {
+		// Absence of a window is unknown, not evidence that a reset happened.
+		// The opt-in permits one initialization attempt per activation instead.
+		return "bootstrap", nil
+	}
+	if snapshot.WeeklyReset.After(now) {
+		return "", nil
+	}
+	return "weekly", &snapshot.WeeklyReset
 }
 
 func (s *CustomCodexResetService) probeNaturalWindow(ctx context.Context, id int64) error {
@@ -65,7 +72,7 @@ func (s *CustomCodexResetService) probeNaturalWindow(ctx context.Context, id int
 	if err != nil {
 		return err
 	}
-	if _, due := customCodexNaturalWindowDue(a, time.Now()); !due {
+	if kind, _ := customCodexWindowProbeBoundary(a, time.Now()); kind == "" {
 		return nil
 	}
 	conn, release, err := customResetAccountLock(ctx, s.db, id)
@@ -78,23 +85,26 @@ func (s *CustomCodexResetService) probeNaturalWindow(ctx context.Context, id int
 	if err != nil {
 		return err
 	}
-	resetAt, due := customCodexNaturalWindowDue(a, time.Now())
-	if !due {
+	kind, boundary := customCodexWindowProbeBoundary(a, time.Now())
+	if kind == "" {
 		return nil
 	}
 	identity := customResetIdentity(a)
 	// Header-derived reset timestamps can drift by a few seconds. The account
 	// lock and five-minute tolerance deduplicate the same boundary across polls,
 	// failures, restarts and instances, while allowing the next weekly boundary.
-	result, err := conn.ExecContext(ctx, `INSERT INTO custom_codex_window_probes(account_id,identity,reset_at)
- SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM custom_codex_reset_policy WHERE account_id=$1 AND natural_probe_enabled AND natural_probe_enabled_at<=$3)
- AND NOT EXISTS(SELECT 1 FROM custom_codex_window_probes WHERE account_id=$1 AND identity=$2 AND reset_at>=$3::timestamptz-INTERVAL '5 minutes')
- ON CONFLICT DO NOTHING`, id, identity, resetAt)
-	if err != nil {
-		return err
+	var resetAt time.Time
+	err = conn.QueryRowContext(ctx, `INSERT INTO custom_codex_window_probes(account_id,identity,kind,reset_at)
+ SELECT $1,$2,$3,COALESCE($4::timestamptz,p.natural_probe_enabled_at)
+ FROM custom_codex_reset_policy p WHERE p.account_id=$1 AND p.natural_probe_enabled AND p.natural_probe_enabled_at IS NOT NULL
+ AND ($3='bootstrap' OR p.natural_probe_enabled_at<=$4)
+ AND NOT EXISTS(SELECT 1 FROM custom_codex_window_probes w WHERE w.account_id=$1 AND w.identity=$2 AND w.kind=$3
+ AND (($3='bootstrap' AND w.reset_at=p.natural_probe_enabled_at) OR ($3='weekly' AND w.reset_at>=$4::timestamptz-INTERVAL '5 minutes')))
+ ON CONFLICT DO NOTHING RETURNING reset_at`, id, identity, kind, boundary).Scan(&resetAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
 	}
-	claimed, err := result.RowsAffected()
-	if err != nil || claimed == 0 {
+	if err != nil {
 		return err
 	}
 	updates, probeErr := s.probe(ctx, a)
@@ -107,7 +117,7 @@ func (s *CustomCodexResetService) probeNaturalWindow(ctx context.Context, id int
 	// Preserve the outcome even when the upstream timeout consumed the batch.
 	stateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = conn.ExecContext(stateCtx, `UPDATE custom_codex_window_probes SET status=$4 WHERE account_id=$1 AND identity=$2 AND reset_at=$3`, id, identity, resetAt, status)
+	_, err = conn.ExecContext(stateCtx, `UPDATE custom_codex_window_probes SET status=$5 WHERE account_id=$1 AND identity=$2 AND kind=$3 AND reset_at=$4`, id, identity, kind, resetAt, status)
 	if probeErr != nil {
 		return probeErr
 	}

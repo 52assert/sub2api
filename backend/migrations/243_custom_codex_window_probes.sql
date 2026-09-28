@@ -7,8 +7,9 @@ ALTER TABLE custom_codex_reset_policy
 CREATE TABLE IF NOT EXISTS custom_codex_window_probes (
     account_id BIGINT NOT NULL REFERENCES accounts(id),
     identity TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('bootstrap', 'weekly')),
     reset_at TIMESTAMPTZ NOT NULL,
     attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status TEXT NOT NULL DEFAULT 'attempted',
-    PRIMARY KEY (account_id, identity, reset_at)
+    PRIMARY KEY (account_id, identity, kind, reset_at)
 );

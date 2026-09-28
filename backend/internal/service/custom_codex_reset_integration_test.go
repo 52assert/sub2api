@@ -645,6 +645,54 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 			require.Zero(t, events)
 		})
 	}
+	for _, probeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unknown weekly window initializes once per activation failure=%t", probeFails), func(t *testing.T) {
+			seed()
+			repo.extra = nil
+			on, off := true, false
+			require.NoError(t, s.Configure(ctx, 1, false, &off))
+			worker := NewCustomCodexResetService(db, repo, subs)
+			defer worker.Stop()
+			calls := 0
+			worker.probe = func(context.Context, *Account) (map[string]any, error) {
+				calls++
+				var claimed int
+				require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM custom_codex_window_probes WHERE account_id=1 AND kind='bootstrap'`).Scan(&claimed))
+				require.Equal(t, calls, claimed)
+				if probeFails {
+					return nil, context.DeadlineExceeded
+				}
+				// A successful response without quota headers must not cause a loop.
+				return nil, nil
+			}
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Zero(t, calls, "unknown time does not bypass the opt-in")
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls)
+			restarted := NewCustomCodexResetService(db, repo, subs)
+			defer restarted.Stop()
+			restarted.probe = worker.probe
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls, "saving again, missing headers and restart never repeat initialization")
+			// Explicitly disabling and re-enabling permits a new initialization.
+			require.NoError(t, s.Configure(ctx, 1, false, &off))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls)
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 2, calls)
+			// Once a future boundary is known, wait for it rather than initializing.
+			repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)}
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 2, calls)
+			d, w, m := balance(1)
+			require.Equal(t, 10.0, d)
+			require.Equal(t, 40.0, w)
+			require.Equal(t, 90.0, m)
+		})
+	}
 	t.Run("excluded accounts never probe", func(t *testing.T) {
 		for _, state := range []string{"disabled", "reset_card_excluded", "account_identity_changed", "superseded"} {
 			t.Run(state, func(t *testing.T) {

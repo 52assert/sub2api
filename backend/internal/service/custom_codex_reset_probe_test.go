@@ -97,22 +97,22 @@ func TestCustomCodexResetProbeStream(t *testing.T) {
 	}
 }
 
-func TestCustomCodexNaturalWindowDue(t *testing.T) {
+func TestCustomCodexWindowProbeBoundary(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	for _, tc := range []struct {
 		name    string
 		reset   time.Time
 		minutes int
 		active  bool
-		want    bool
+		want    string
 	}{
-		{"not yet due", now.Add(time.Second), 10080, true, false},
-		{"at boundary", now, 10080, true, true},
-		{"missed while offline", now.Add(-time.Hour), 10080, true, true},
-		{"five hour only", now, 300, true, false},
-		{"missing window", now, 0, true, false},
-		{"missing reset", time.Time{}, 10080, true, false},
-		{"inactive", now, 10080, false, false},
+		{"not yet due", now.Add(time.Second), 10080, true, ""},
+		{"at boundary", now, 10080, true, "weekly"},
+		{"missed while offline", now.Add(-time.Hour), 10080, true, "weekly"},
+		{"five hour only", now, 300, true, "bootstrap"},
+		{"missing window", now, 0, true, "bootstrap"},
+		{"missing reset", time.Time{}, 10080, true, "bootstrap"},
+		{"inactive", now, 10080, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "stable"}, Extra: map[string]any{
@@ -122,8 +122,14 @@ func TestCustomCodexNaturalWindowDue(t *testing.T) {
 			if tc.active {
 				a.Status = "active"
 			}
-			_, due := customCodexNaturalWindowDue(a, now)
-			require.Equal(t, tc.want, due)
+			kind, boundary := customCodexWindowProbeBoundary(a, now)
+			require.Equal(t, tc.want, kind)
+			if kind == "weekly" {
+				require.NotNil(t, boundary)
+				require.True(t, tc.reset.Equal(*boundary))
+			} else {
+				require.Nil(t, boundary)
+			}
 		})
 	}
 }
