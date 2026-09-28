@@ -18,7 +18,7 @@ git switch -c feature/my-feature
 
 ## 自动同步
 
-`Fork - Sync upstream` 每天北京时间约 10:23 检查更新，也会在 `custom` 更新后运行。可在 Actions 页面手动运行。
+`Fork - Sync upstream` 每小时第 23 分钟检查更新，也会在 `custom` 更新后运行。GitHub 定时任务可能延迟执行；可在 Actions 页面手动运行。没有上游新提交时直接结束，有更新才进入验证、合并和镜像发布流程。
 
 1. 从官方抓取 `main`，检查 Fork 的 `main` 能否快进；有分叉立即失败，绝不强制覆盖。
 2. 更新本仓库 `main`，为 `main → custom` 创建或复用同一条 PR。
