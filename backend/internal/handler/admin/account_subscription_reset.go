@@ -44,13 +44,14 @@ func (h *AccountHandler) ConfigureSubscriptionReset(c *gin.Context) {
 		return
 	}
 	var request struct {
-		Enabled *bool `json:"enabled" binding:"required"`
+		Enabled             *bool `json:"enabled" binding:"required"`
+		NaturalProbeEnabled *bool `json:"natural_probe_enabled"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		response.BadRequest(c, "enabled is required")
 		return
 	}
-	if err := h.customCodexReset.Configure(c.Request.Context(), id, *request.Enabled); err != nil {
+	if err := h.customCodexReset.Configure(c.Request.Context(), id, *request.Enabled, request.NaturalProbeEnabled); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

@@ -12,7 +12,7 @@ vi.mock('@/api/admin/accountSubscriptionReset', () => ({
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ locale: { value: 'zh' } }) }))
 const account = { id: 27, name: 'Codex account' } as Account
 function preview() {
-  return { enabled: false, status: 'disabled', fingerprint: 'a'.repeat(64), last_checked_at: null, next_check_at: null, last_event_at: null, poll_error: '',
+  return { enabled: false, natural_probe_enabled: false, status: 'disabled', fingerprint: 'a'.repeat(64), last_checked_at: null, next_check_at: null, last_event_at: null, poll_error: '',
     subscriptions: [{ id: 3, user_id: 4, group_id: 5, group_name: 'Group', daily_usage_usd: 10, weekly_usage_usd: 40 }] }
 }
 function create() { return mount(AccountSubscriptionResetModal, { props: { show: true, account }, global: { stubs: { BaseDialog: { template: '<div><slot /></div>' } } } }) }
@@ -59,7 +59,31 @@ describe('account subscription resets', () => {
     const wrapper = create(); await flushPromises()
     await wrapper.get('input[type="checkbox"]').setValue(true)
     await button(wrapper, '保存自动设置').trigger('click'); await flushPromises()
-    expect(mocks.configure).toHaveBeenCalledWith(27, true)
+    expect(mocks.configure).toHaveBeenCalledWith(27, true, false)
+    expect(mocks.reset).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('defaults natural probes off and saves them independently of official resets', async () => {
+    const wrapper = create(); await flushPromises()
+    const checkbox = wrapper.get('[data-test="natural-window-probe"]')
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false)
+    expect(button(wrapper, '保存自动设置').attributes('disabled')).toBeDefined()
+    await checkbox.setValue(true)
+    mocks.preview.mockResolvedValue({ ...preview(), natural_probe_enabled: true })
+    await button(wrapper, '保存自动设置').trigger('click'); await flushPromises()
+    expect(mocks.configure).toHaveBeenCalledWith(27, false, true)
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true)
+    expect(mocks.reset).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('loads and disables the saved natural probe setting', async () => {
+    mocks.preview.mockResolvedValue({ ...preview(), natural_probe_enabled: true })
+    const wrapper = create(); await flushPromises()
+    const checkbox = wrapper.get('[data-test="natural-window-probe"]')
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true)
+    await checkbox.setValue(false)
+    await button(wrapper, '保存自动设置').trigger('click'); await flushPromises()
+    expect(mocks.configure).toHaveBeenCalledWith(27, false, false)
     expect(mocks.reset).not.toHaveBeenCalled()
     wrapper.unmount()
   })

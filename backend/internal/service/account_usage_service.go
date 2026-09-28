@@ -827,6 +827,10 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 }
 
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
+	return s.probeOpenAICodexSnapshotWithPayload(ctx, account, createOpenAITestPayload(openaipkg.CodexUsageProbeModel, true), false)
+}
+
+func (s *AccountUsageService) probeOpenAICodexSnapshotWithPayload(ctx context.Context, account *Account, payload map[string]any, waitForCompletion bool) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
 	}
@@ -837,8 +841,6 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if accessToken == "" && !account.IsOpenAIAgentIdentity() {
 		return nil, fmt.Errorf("no access token available")
 	}
-	modelID := openaipkg.CodexUsageProbeModel
-	payload := createOpenAITestPayload(modelID, true)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal openai probe payload: %w", err)
@@ -900,6 +902,15 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if waitForCompletion {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("openai codex reset probe returned status %d", resp.StatusCode)
+		}
+		// Reading only the headers can cancel generation before it opens a window.
+		if err := consumeCustomCodexResetProbe(resp.Body); err != nil {
+			return nil, err
+		}
+	}
 	updates, err := extractOpenAICodexProbeUpdates(resp)
 	if err != nil {
 		return nil, err

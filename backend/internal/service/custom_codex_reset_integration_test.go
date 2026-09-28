@@ -71,7 +71,7 @@ func TestCustomCodexResetTransactions(t *testing.T) {
  CREATE TABLE account_groups(account_id BIGINT REFERENCES accounts(id),group_id BIGINT REFERENCES groups(id),PRIMARY KEY(account_id,group_id));
  CREATE TABLE user_subscriptions(id BIGINT PRIMARY KEY,user_id BIGINT,group_id BIGINT,status TEXT,starts_at TIMESTAMPTZ,expires_at TIMESTAMPTZ,deleted_at TIMESTAMPTZ,daily_usage_usd NUMERIC(20,10),weekly_usage_usd NUMERIC(20,10),monthly_usage_usd NUMERIC(20,10),daily_window_start TIMESTAMPTZ,weekly_window_start TIMESTAMPTZ,updated_at TIMESTAMPTZ);`)
 	require.NoError(t, err)
-	for _, name := range []string{"241_custom_codex_subscription_reset.sql", "242_custom_codex_reset_history.sql"} {
+	for _, name := range []string{"241_custom_codex_subscription_reset.sql", "242_custom_codex_reset_history.sql", "243_custom_codex_window_probes.sql"} {
 		migration, e := migrations.FS.ReadFile(name)
 		require.NoError(t, e)
 		_, e = db.Exec(string(migration))
@@ -505,5 +505,224 @@ func TestCustomCodexResetTransactions(t *testing.T) {
 		var status string
 		require.NoError(t, db.QueryRow(`SELECT status FROM custom_codex_reset_jobs WHERE event_id='fresh' AND account_id=1`).Scan(&status))
 		require.Equal(t, "succeeded", status)
+	})
+	for _, probeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("one probe per event survives restart failure=%t", probeFails), func(t *testing.T) {
+			seed()
+			enable()
+			eventAt := time.Now().Add(-time.Minute)
+			repo.extra = map[string]any{"codex_usage_updated_at": eventAt.Add(-time.Minute).Format(time.RFC3339), "codex_7d_used_percent": 80.0, "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339)}
+			a, e := repo.GetByID(ctx, 1)
+			require.NoError(t, e)
+			before := customAccountSnapshot(a)
+			require.NoError(t, s.recordQuotaHistory(ctx, a))
+			observe("probe-once", eventAt)
+			updates := map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_used_percent": 0.1, "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(7*24*time.Hour - 10*time.Second).Format(time.RFC3339)}
+			calls := 0
+			probe := func(_ context.Context, account *Account) (map[string]any, error) {
+				calls++
+				require.Equal(t, int64(1), account.ID)
+				var attempts int
+				require.NoError(t, db.QueryRow(`SELECT attempts FROM custom_codex_reset_jobs WHERE event_id='probe-once' AND account_id=1`).Scan(&attempts))
+				require.Equal(t, 1, attempts, "claim must commit before upstream request")
+				if probeFails {
+					return nil, context.DeadlineExceeded
+				}
+				return updates, nil
+			}
+			worker := NewCustomCodexResetService(db, repo, subs)
+			defer worker.Stop()
+			worker.probe = probe
+			status, e := worker.verify(ctx, 1, "probe-once", eventAt, eventAt, before, 0)
+			require.NoError(t, e)
+			if probeFails {
+				require.Equal(t, "awaiting_usage", status)
+				d, w, _ := balance(1)
+				require.Equal(t, 10.0, d)
+				require.Equal(t, 40.0, w)
+			} else {
+				require.Equal(t, "succeeded", status)
+				d, w, m := balance(1)
+				require.Zero(t, d)
+				require.Zero(t, w)
+				require.Equal(t, 90.0, m)
+			}
+			restarted := NewCustomCodexResetService(db, repo, subs)
+			defer restarted.Stop()
+			restarted.probe = probe
+			_, e = restarted.verify(ctx, 1, "probe-once", eventAt, eventAt, before, 0)
+			require.NoError(t, e)
+			require.Equal(t, 1, calls, "stale in-memory attempts cannot repeat the durable claim")
+			if probeFails {
+				// Normal traffic can still complete verification after a failed probe.
+				repo.extra = updates
+				status, e = restarted.verify(ctx, 1, "probe-once", eventAt, eventAt, before, 0)
+				require.NoError(t, e)
+				require.Equal(t, "succeeded", status)
+				require.Equal(t, 1, calls)
+			}
+		})
+	}
+	t.Run("natural probe switch defaults off and persists independently", func(t *testing.T) {
+		seed()
+		repo.extra = nil
+		require.NoError(t, s.Configure(ctx, 1, false, nil))
+		view, e := s.Preview(ctx, 1)
+		require.NoError(t, e)
+		require.False(t, view.NaturalProbeEnabled)
+		on, off := true, false
+		require.NoError(t, s.Configure(ctx, 1, false, &on))
+		var enabledAt time.Time
+		require.NoError(t, db.QueryRow(`SELECT natural_probe_enabled_at FROM custom_codex_reset_policy WHERE account_id=1`).Scan(&enabledAt))
+		require.NoError(t, s.Configure(ctx, 1, false, nil))
+		view, e = s.Preview(ctx, 1)
+		require.NoError(t, e)
+		require.True(t, view.NaturalProbeEnabled)
+		require.False(t, view.Enabled)
+		require.NoError(t, s.Configure(ctx, 1, false, &on))
+		var unchanged time.Time
+		require.NoError(t, db.QueryRow(`SELECT natural_probe_enabled_at FROM custom_codex_reset_policy WHERE account_id=1`).Scan(&unchanged))
+		require.Equal(t, enabledAt, unchanged)
+		require.NoError(t, s.Configure(ctx, 1, false, &off))
+		view, e = s.Preview(ctx, 1)
+		require.NoError(t, e)
+		require.False(t, view.NaturalProbeEnabled)
+	})
+	for _, probeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("natural weekly expiry probes once without an announcement failure=%t", probeFails), func(t *testing.T) {
+			seed()
+			on, off := true, false
+			resetAt := time.Now().Add(-7*24*time.Hour - time.Minute).Truncate(time.Second)
+			repo.extra = map[string]any{"codex_usage_updated_at": resetAt.Add(-time.Hour).Format(time.RFC3339), "codex_7d_used_percent": 80.0, "codex_7d_window_minutes": 10080, "codex_7d_reset_at": resetAt.Format(time.RFC3339)}
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			worker := NewCustomCodexResetService(db, repo, subs)
+			defer worker.Stop()
+			calls := 0
+			worker.probe = func(context.Context, *Account) (map[string]any, error) {
+				calls++
+				var claims int
+				require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM custom_codex_window_probes WHERE account_id=1`).Scan(&claims))
+				require.Equal(t, calls, claims, "claim must be persisted before IO")
+				if probeFails {
+					return nil, context.DeadlineExceeded
+				}
+				return nil, nil
+			}
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Zero(t, calls, "do not probe windows expired before activation")
+			exec(`UPDATE custom_codex_reset_policy SET natural_probe_enabled_at=$1 WHERE account_id=1`, resetAt.Add(-time.Hour))
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls)
+			var status string
+			require.NoError(t, db.QueryRow(`SELECT status FROM custom_codex_window_probes WHERE account_id=1`).Scan(&status))
+			if probeFails {
+				require.Equal(t, "failed", status)
+			} else {
+				require.Equal(t, "succeeded", status)
+			}
+			restarted := NewCustomCodexResetService(db, repo, subs)
+			defer restarted.Stop()
+			restarted.probe = worker.probe
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			repo.extra["codex_7d_reset_at"] = resetAt.Add(2 * time.Second).Format(time.RFC3339)
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls, "restart and timestamp drift must not repeat a window")
+			repo.extra["codex_7d_reset_at"] = resetAt.Add(7 * 24 * time.Hour).Format(time.RFC3339)
+			repo.extra["codex_usage_updated_at"] = resetAt.Add(6 * 24 * time.Hour).Format(time.RFC3339)
+			require.NoError(t, s.Configure(ctx, 1, false, &off))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls, "disabled means no probe at the next boundary")
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			exec(`UPDATE custom_codex_reset_policy SET natural_probe_enabled_at=$1 WHERE account_id=1`, resetAt)
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 2, calls, "a subsequent weekly window gets its own probe")
+			d, w, m := balance(1)
+			require.Equal(t, 10.0, d)
+			require.Equal(t, 40.0, w)
+			require.Equal(t, 90.0, m)
+			var events int
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM custom_codex_reset_events`).Scan(&events))
+			require.Zero(t, events)
+		})
+	}
+	for _, probeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unknown weekly window initializes once per activation failure=%t", probeFails), func(t *testing.T) {
+			seed()
+			repo.extra = nil
+			on, off := true, false
+			require.NoError(t, s.Configure(ctx, 1, false, &off))
+			worker := NewCustomCodexResetService(db, repo, subs)
+			defer worker.Stop()
+			calls := 0
+			worker.probe = func(context.Context, *Account) (map[string]any, error) {
+				calls++
+				var claimed int
+				require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM custom_codex_window_probes WHERE account_id=1 AND kind='bootstrap'`).Scan(&claimed))
+				require.Equal(t, calls, claimed)
+				if probeFails {
+					return nil, context.DeadlineExceeded
+				}
+				// A successful response without quota headers must not cause a loop.
+				return nil, nil
+			}
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Zero(t, calls, "unknown time does not bypass the opt-in")
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, worker.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls)
+			restarted := NewCustomCodexResetService(db, repo, subs)
+			defer restarted.Stop()
+			restarted.probe = worker.probe
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls, "saving again, missing headers and restart never repeat initialization")
+			// Explicitly disabling and re-enabling permits a new initialization.
+			require.NoError(t, s.Configure(ctx, 1, false, &off))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 1, calls)
+			require.NoError(t, s.Configure(ctx, 1, false, &on))
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 2, calls)
+			// Once a future boundary is known, wait for it rather than initializing.
+			repo.extra = map[string]any{"codex_usage_updated_at": time.Now().Format(time.RFC3339), "codex_7d_window_minutes": 10080, "codex_7d_reset_at": time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)}
+			require.NoError(t, restarted.probeNaturalWindows(ctx))
+			require.Equal(t, 2, calls)
+			d, w, m := balance(1)
+			require.Equal(t, 10.0, d)
+			require.Equal(t, 40.0, w)
+			require.Equal(t, 90.0, m)
+		})
+	}
+	t.Run("excluded accounts never probe", func(t *testing.T) {
+		for _, state := range []string{"disabled", "reset_card_excluded", "account_identity_changed", "superseded"} {
+			t.Run(state, func(t *testing.T) {
+				seed()
+				enable()
+				eventAt := time.Now().Add(-time.Minute)
+				repo.extra = nil
+				observe("excluded", eventAt)
+				a, e := repo.GetByID(ctx, 1)
+				require.NoError(t, e)
+				before := customAccountSnapshot(a)
+				switch state {
+				case "disabled":
+					exec(`UPDATE custom_codex_reset_policy SET enabled=false WHERE account_id=1`)
+				case "reset_card_excluded":
+					exec(`INSERT INTO custom_codex_reset_card_attempts(account_id) VALUES(1)`)
+				case "account_identity_changed":
+					before.Identity = "previous-account"
+				case "superseded":
+					exec(`UPDATE custom_codex_reset_jobs SET status='superseded' WHERE event_id='excluded'`)
+				}
+				worker := NewCustomCodexResetService(db, repo, subs)
+				defer worker.Stop()
+				worker.probe = func(context.Context, *Account) (map[string]any, error) {
+					t.Fatal("excluded account must not probe")
+					return nil, nil
+				}
+				_, e = worker.verify(ctx, 1, "excluded", eventAt, eventAt, before, 0)
+				require.NoError(t, e)
+			})
+		}
 	})
 }
