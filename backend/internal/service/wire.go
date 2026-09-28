@@ -1074,8 +1074,9 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 	return aggregator
 }
 
-func ProvideCustomCodexResetService(db *sql.DB, accounts AccountRepository, subscriptions *SubscriptionService) *CustomCodexResetService {
+func ProvideCustomCodexResetService(db *sql.DB, accounts AccountRepository, subscriptions *SubscriptionService, usage *AccountUsageService) *CustomCodexResetService {
 	s := NewCustomCodexResetService(db, accounts, subscriptions)
+	s.probe = usage.probeCustomCodexReset
 	s.Start()
 	return s
 }

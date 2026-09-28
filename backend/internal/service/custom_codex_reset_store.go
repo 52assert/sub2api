@@ -30,14 +30,15 @@ type CustomResetSubscription struct {
 	WeeklyStart *time.Time `json:"-"`
 }
 type CustomResetView struct {
-	Enabled       bool                      `json:"enabled"`
-	Status        string                    `json:"status"`
-	Subscriptions []CustomResetSubscription `json:"subscriptions"`
-	Fingerprint   string                    `json:"fingerprint"`
-	NextCheck     *time.Time                `json:"next_check_at"`
-	LastChecked   *time.Time                `json:"last_checked_at"`
-	PollError     string                    `json:"poll_error"`
-	LastEventAt   *time.Time                `json:"last_event_at"`
+	Enabled             bool                      `json:"enabled"`
+	NaturalProbeEnabled bool                      `json:"natural_probe_enabled"`
+	Status              string                    `json:"status"`
+	Subscriptions       []CustomResetSubscription `json:"subscriptions"`
+	Fingerprint         string                    `json:"fingerprint"`
+	NextCheck           *time.Time                `json:"next_check_at"`
+	LastChecked         *time.Time                `json:"last_checked_at"`
+	PollError           string                    `json:"poll_error"`
+	LastEventAt         *time.Time                `json:"last_event_at"`
 }
 type customResetQuery interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -94,7 +95,7 @@ func (s *CustomCodexResetService) Preview(ctx context.Context, id int64) (*Custo
 		return nil, err
 	}
 	v := &CustomResetView{Status: "disabled", Subscriptions: subs, Fingerprint: customResetFingerprint(subs)}
-	err = s.db.QueryRowContext(ctx, `SELECT enabled,status FROM custom_codex_reset_policy WHERE account_id=$1`, id).Scan(&v.Enabled, &v.Status)
+	err = s.db.QueryRowContext(ctx, `SELECT enabled,status,natural_probe_enabled FROM custom_codex_reset_policy WHERE account_id=$1`, id).Scan(&v.Enabled, &v.Status, &v.NaturalProbeEnabled)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
@@ -106,17 +107,19 @@ func (s *CustomCodexResetService) Preview(ctx context.Context, id int64) (*Custo
 	}
 	return v, nil
 }
-func (s *CustomCodexResetService) Configure(ctx context.Context, id int64, enabled bool) error {
+func (s *CustomCodexResetService) Configure(ctx context.Context, id int64, enabled bool, naturalProbeEnabled *bool) error {
 	a, err := s.eligible(ctx, id)
 	if err != nil {
 		return err
 	}
 	snapshot, _ := json.Marshal(customAccountSnapshot(a))
-	_, err = s.db.ExecContext(ctx, `INSERT INTO custom_codex_reset_policy(account_id,enabled,baseline,status)
- VALUES($1,$2,$3,CASE WHEN $2 THEN 'watching' ELSE 'disabled' END)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO custom_codex_reset_policy(account_id,enabled,baseline,status,natural_probe_enabled,natural_probe_enabled_at)
+ VALUES($1,$2,$3,CASE WHEN $2 THEN 'watching' ELSE 'disabled' END,COALESCE($4,FALSE),CASE WHEN $4 THEN NOW() END)
  ON CONFLICT(account_id) DO UPDATE SET enabled=EXCLUDED.enabled,
  enabled_at=CASE WHEN custom_codex_reset_policy.enabled=EXCLUDED.enabled THEN custom_codex_reset_policy.enabled_at ELSE NOW() END,
- baseline=EXCLUDED.baseline,status=EXCLUDED.status,updated_at=NOW()`, id, enabled, string(snapshot))
+ natural_probe_enabled=COALESCE($4,custom_codex_reset_policy.natural_probe_enabled),
+ natural_probe_enabled_at=CASE WHEN $4 IS NULL OR custom_codex_reset_policy.natural_probe_enabled=$4 THEN custom_codex_reset_policy.natural_probe_enabled_at WHEN $4 THEN NOW() ELSE NULL END,
+ baseline=EXCLUDED.baseline,status=EXCLUDED.status,updated_at=NOW()`, id, enabled, string(snapshot), naturalProbeEnabled)
 	if err == nil && enabled {
 		return s.recordQuotaHistory(ctx, a)
 	}

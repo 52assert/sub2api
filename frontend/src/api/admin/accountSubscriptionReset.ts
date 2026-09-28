@@ -2,6 +2,7 @@ import { apiClient } from '../client'
 
 export interface SubscriptionResetPreview {
   enabled: boolean
+  natural_probe_enabled: boolean
   status: string
   fingerprint: string
   last_checked_at: string | null
@@ -20,8 +21,8 @@ export interface SubscriptionResetPreview {
 export async function getSubscriptionResetPreview(id: number): Promise<SubscriptionResetPreview> {
   return (await apiClient.get<SubscriptionResetPreview>(`/admin/accounts/${id}/subscription-reset`)).data
 }
-export async function configureSubscriptionReset(id: number, enabled: boolean): Promise<void> {
-  await apiClient.put(`/admin/accounts/${id}/subscription-reset`, { enabled })
+export async function configureSubscriptionReset(id: number, enabled: boolean, naturalProbeEnabled: boolean): Promise<void> {
+  await apiClient.put(`/admin/accounts/${id}/subscription-reset`, { enabled, natural_probe_enabled: naturalProbeEnabled })
 }
 export async function resetAccountGroupSubscriptions(id: number, operationID: string, fingerprint: string): Promise<number> {
   const { data } = await apiClient.post<{ reset_count: number }>(`/admin/accounts/${id}/subscription-reset`, {

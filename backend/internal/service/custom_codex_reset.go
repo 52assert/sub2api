@@ -125,6 +125,7 @@ type CustomCodexResetService struct {
 	db            *sql.DB
 	accounts      AccountRepository
 	subscriptions *SubscriptionService
+	probe         func(context.Context, *Account) (map[string]any, error)
 	client        *http.Client
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -137,7 +138,7 @@ func NewCustomCodexResetService(db *sql.DB, accounts AccountRepository, subs *Su
 }
 func (s *CustomCodexResetService) Start() {
 	// Independent workers keep billing verification from delaying the feed poll.
-	for _, run := range []func(context.Context) error{s.poll, s.work} {
+	for _, run := range []func(context.Context) error{s.poll, s.work, s.probeNaturalWindows} {
 		s.wg.Add(1)
 		go func(run func(context.Context) error) {
 			defer s.wg.Done()
@@ -476,6 +477,30 @@ func (s *CustomCodexResetService) verify(ctx context.Context, id int64, event st
 	}
 	if a.Status != "active" {
 		return "inactive_account", nil
+	}
+	if before.Identity == "" || customResetIdentity(a) != before.Identity {
+		return "account_identity_changed", nil
+	}
+	if s.probe != nil {
+		// Claim durably before contacting upstream. A timeout or process restart
+		// must not send another request for the same account and announcement.
+		result, claimErr := conn.ExecContext(ctx, `UPDATE custom_codex_reset_jobs SET attempts=attempts+1,updated_at=NOW()
+ WHERE event_id=$1 AND account_id=$2 AND attempts=0 AND status IN ('pending','awaiting_usage')`, event, id)
+		if claimErr != nil {
+			return "pending", claimErr
+		}
+		claimed, claimErr := result.RowsAffected()
+		if claimErr != nil {
+			return "pending", claimErr
+		}
+		if claimed > 0 {
+			updates, probeErr := s.probe(ctx, a)
+			if probeErr != nil {
+				slog.Warn("custom_codex_reset_probe_failed", "account_id", id, "event_id", event, "error", probeErr)
+			} else {
+				mergeAccountExtra(a, updates)
+			}
+		}
 	}
 	after := customAccountSnapshot(a)
 	if !after.At.After(announced) || time.Since(after.At) > 5*time.Minute {
