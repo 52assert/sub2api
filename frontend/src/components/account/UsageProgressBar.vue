@@ -53,9 +53,17 @@
         {{ displayPercent }}
       </span>
 
-      <!-- Reset time -->
-      <span v-if="shouldShowResetTime" class="shrink-0 text-[10px] text-gray-400">
+      <!-- Reset time: relative countdown + absolute local reset timestamp -->
+      <span v-if="shouldShowResetTime" class="shrink-0 whitespace-nowrap text-[10px] text-gray-400">
         {{ formatResetTime }}
+        <span
+          v-if="absoluteResetTime"
+          data-test="reset-datetime"
+          class="text-gray-400/80 dark:text-dark-500"
+          :title="t('usage.resetAtTime', { time: absoluteResetTimeFull })"
+        >
+          ({{ absoluteResetTime }})
+        </span>
       </span>
     </div>
   </div>
@@ -66,7 +74,7 @@ import { computed, ref, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import type { WindowStats } from '@/types'
-import { formatCompactNumber } from '@/utils/format'
+import { formatCompactNumber, formatDate, formatDateTimeToMinute } from '@/utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -80,8 +88,10 @@ const props = withDefaults(
     remainingCapacity?: boolean
     /** fixed: 定宽居中徽章（账号页纵向对齐）；auto: 限宽截断左对齐（监控页组合标签） */
     labelWidth?: 'fixed' | 'auto'
+    /** 是否在倒计时右侧附带具体重置时间（本地时区） */
+    showResetDateTime?: boolean
   }>(),
-  { labelWidth: 'fixed' }
+  { labelWidth: 'fixed', showResetDateTime: true }
 )
 
 const { t } = useI18n()
@@ -213,6 +223,27 @@ const formatResetTime = computed(() => {
   } else {
     return `${diffMins}m`
   }
+})
+
+// Absolute reset timestamp (local time) next to the countdown, e.g. (03/17 02:30).
+// Hidden when the stored reset already passed (countdown then shows pending/now).
+const absoluteResetTime = computed(() => {
+  if (!props.showResetDateTime || !props.resetsAt) return ''
+  const date = new Date(props.resetsAt)
+  if (isNaN(date.getTime())) return ''
+  if (date.getTime() - now.value.getTime() <= 0) return ''
+  return formatDate(date, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+})
+
+const absoluteResetTimeFull = computed(() => {
+  if (!props.resetsAt) return ''
+  return formatDateTimeToMinute(props.resetsAt)
 })
 
 // Window stats formatters

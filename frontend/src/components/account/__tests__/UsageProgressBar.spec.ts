@@ -7,7 +7,8 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: Record<string, unknown>) =>
+        params ? `${key} ${Object.values(params).join(' ')}` : key
     })
   }
 })
@@ -66,6 +67,51 @@ describe('UsageProgressBar', () => {
 
     expect(wrapper.text()).toContain('2h 30m')
     expect(wrapper.text()).not.toContain('usage.resetNow')
+  })
+
+  it('默认在倒计时右侧显示具体重置时间', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 31,
+        resetsAt: '2026-03-17T02:30:00Z',
+        color: 'emerald'
+      }
+    })
+
+    const resetTime = wrapper.get('[data-test="reset-datetime"]')
+    expect(resetTime.text()).toMatch(/\(\d{2}\/\d{2},? \d{2}:\d{2}\)/)
+    expect(resetTime.attributes('title')).toContain('2026')
+    expect(wrapper.text()).toContain('2h 30m')
+  })
+
+  it('showResetDateTime=false 时只显示倒计时', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d',
+        utilization: 31,
+        resetsAt: '2026-03-17T02:30:00Z',
+        showResetDateTime: false,
+        color: 'emerald'
+      }
+    })
+
+    expect(wrapper.text()).toContain('2h 30m')
+    expect(wrapper.find('[data-test="reset-datetime"]').exists()).toBe(false)
+  })
+
+  it('resetsAt 已过期时不显示具体重置时间', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 53,
+        resetsAt: '2026-03-16T22:00:00Z',
+        color: 'indigo'
+      }
+    })
+
+    expect(wrapper.text()).toContain('usage.resetPending')
+    expect(wrapper.find('[data-test="reset-datetime"]').exists()).toBe(false)
   })
 
   it('resetsAt 已过期且利用率大于 0 时显示「待刷新」', () => {
