@@ -2,7 +2,7 @@ name: Fork - Sync upstream
 
 on:
   schedule:
-    - cron: '23 2 * * *' # 10:23 Asia/Shanghai; GitHub may delay scheduled runs.
+    - cron: '23 * * * *' # Every hour at :23; GitHub may delay scheduled runs.
   workflow_dispatch:
   push:
     branches: [custom]
