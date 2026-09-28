@@ -24,7 +24,9 @@ git switch -c feature/my-feature
 2. 更新本仓库 `main`，为 `main → custom` 创建或复用同一条 PR。
 3. 显式触发 `Fork - Validate and build`，测试该 PR 与当前 `custom` 合并后的提交，不依赖机器人 PR 事件自动触发 CI。
 4. 必需状态 `custom/validation` 通过后，工作流再次核对 PR 的来源、分支和已测试的 head/base 提交，自动以 merge commit 合并本仓库 `main → custom` PR；冲突、失败或提交变化时保留 PR 待处理。其他功能 PR 不自动合并。仓库关闭 squash、rebase 和自动删除分支。
-5. 机器人合并后显式触发 `custom` 验证和镜像发布，避免 `GITHUB_TOKEN` 事件不触发后续工作流的问题。
+5. 机器人合并后显式触发 `custom` 镜像发布，避免 `GITHUB_TOKEN` 事件不触发后续工作流的问题。合并提交的合入分支（第二个父提交）若已带成功的 `custom/validation` 状态，直接复用该结果并跳过重复检查；无法确认（非 merge 提交、状态缺失或 API 出错）时回退到完整检查。
+
+验证按改动范围裁剪：PR 只改 `frontend/**` 时跳过 backend 测试和 golangci-lint，只改 `backend/**` 时跳过前端检查，diff 无法确定时保守跑全量。`custom/validation` 仍由 `result` 汇总后写入，保护规则不变。
 
 已开启上游同步 PR 自动合并；服务器自动部署保持关闭。没有冲突并不等于业务兼容；功能开发后应补充关键回归测试。
 

@@ -35,6 +35,7 @@ jobs:
       pr: ${{ steps.target.outputs.pr }}
       valid: ${{ steps.target.outputs.valid }}
       report: ${{ steps.target.outputs.report }}
+      skip_checks: ${{ steps.target.outputs.skip_checks }}
     steps:
       - uses: actions/github-script@v8
         id: target
@@ -50,7 +51,25 @@ jobs:
               core.setOutput('head', context.sha);
               core.setOutput('valid', 'true');
               core.setOutput('report', 'true');
+              // A merge commit whose merged branch already passed custom/validation
+              // must not repeat the whole check suite before publishing the image.
+              // Only the merged-in branch (second parent) counts: the first parent
+              // is the previously published custom tip.
+              let skipChecks = false;
+              try {
+                const { data: commit } = await github.rest.repos.getCommit({ ...repo, ref: context.sha });
+                const mergedHead = commit.parents?.length === 2 ? commit.parents[1].sha : '';
+                if (mergedHead) {
+                  const { data: combined } = await github.rest.repos.getCombinedStatusForRef({ ...repo, ref: mergedHead });
+                  skipChecks = combined.state === 'success' &&
+                    combined.statuses.some(status => status.context === 'custom/validation' && status.state === 'success');
+                }
+              } catch (error) {
+                core.warning(`Could not verify a previous custom/validation status, running full checks: ${error.message}`);
+              }
+              core.setOutput('skip_checks', String(skipChecks));
             } else {
+              core.setOutput('skip_checks', 'false');
               if (!/^[1-9][0-9]*$/.test(raw)) throw new Error('Invalid PR number');
               let pr;
               for (let attempt = 0; attempt < 10; attempt++) {
@@ -84,10 +103,12 @@ jobs:
 
   checks:
     needs: resolve
-    if: needs.resolve.outputs.valid == 'true'
+    if: needs.resolve.outputs.valid == 'true' && needs.resolve.outputs.skip_checks != 'true'
     uses: ./.github/workflows/fork-checks.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
+      base: ${{ needs.resolve.outputs.base }}
+      head: ${{ needs.resolve.outputs.head }}
 
   result:
     name: Custom validation result
@@ -105,10 +126,16 @@ jobs:
           BASE_SHA: ${{ needs.resolve.outputs.base }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr }}
           CAN_REPORT: ${{ needs.resolve.outputs.report }}
+          SKIP_CHECKS: ${{ needs.resolve.outputs.skip_checks }}
           CHECK_RESULT: ${{ needs.checks.result }}
         with:
           script: |
             let ok = process.env.CHECK_RESULT === 'success';
+            if (process.env.SKIP_CHECKS === 'true') {
+              // The pushed merge commit contains a branch whose head already
+              // passed custom/validation; reuse that result instead of rerunning.
+              ok = true;
+            }
             if (process.env.PR_NUMBER) {
               const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: Number(process.env.PR_NUMBER) });
               ok &&= pr.state === 'open' && pr.head.sha === process.env.HEAD_SHA && pr.base.sha === process.env.BASE_SHA;
