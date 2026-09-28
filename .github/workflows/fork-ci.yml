@@ -192,8 +192,14 @@ jobs:
 
   image:
     needs: [resolve, checks, result]
+    # always() is required: when the merged branch was already validated, the
+    # reusable checks job is skipped and would otherwise skip the image too.
     if: >-
+      always() &&
       github.ref == 'refs/heads/custom' &&
+      needs.resolve.result == 'success' &&
+      needs.result.result == 'success' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.pr_number == ''))
     permissions:
       contents: write
