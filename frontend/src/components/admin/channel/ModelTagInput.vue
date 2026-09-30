@@ -1,5 +1,17 @@
 <template>
   <div>
+    <Select
+      v-if="suggestions !== undefined"
+      :model-value="null"
+      :options="modelOptions"
+      searchable
+      :disabled="loading"
+      :loading="loading"
+      :placeholder="loading ? t('common.loading') : t('admin.channels.form.modelSelectPlaceholder')"
+      :aria-label="t('admin.channels.form.models')"
+      class="mb-2"
+      @update:model-value="selectModel"
+    />
     <!-- Tags display -->
     <div class="flex flex-wrap gap-1.5 rounded-lg border border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-800 min-h-[2.5rem]">
       <span
@@ -31,14 +43,17 @@
       />
     </div>
     <p class="mt-1 text-xs text-gray-400">
-      {{ t('admin.channels.form.modelInputHint', 'Press Enter to add, supports paste for batch import.') }}
+      {{ suggestions !== undefined
+        ? t('admin.channels.form.modelSelectHint')
+        : t('admin.channels.form.modelInputHint', 'Press Enter to add, supports paste for batch import.') }}
     </p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { getPlatformTagClass } from './types'
 
@@ -48,6 +63,8 @@ const props = defineProps<{
   models: string[]
   placeholder?: string
   platform?: string
+  suggestions?: string[]
+  loading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -56,6 +73,15 @@ const emit = defineEmits<{
 
 const inputValue = ref('')
 const inputRef = ref<HTMLInputElement>()
+
+const modelOptions = computed(() => [...new Set((props.suggestions || []).map(model => model.trim()))]
+  .filter(model => model && !props.models.includes(model))
+  .map(model => ({ value: model, label: model })))
+
+function selectModel(value: string | number | boolean | null) {
+  if (typeof value !== 'string' || !value || props.models.includes(value)) return
+  emit('update:models', [...props.models, value])
+}
 
 function addModel() {
   const val = inputValue.value.trim()

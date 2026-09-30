@@ -76,6 +76,8 @@
             <ModelTagInput
               :models="entry.models"
               :platform="props.platform"
+              :suggestions="props.modelSuggestions"
+              :loading="props.modelSuggestionsLoading"
               @update:models="onModelsUpdate($event)"
               :placeholder="t('admin.channels.form.modelsPlaceholder')"
               class="mt-1"
@@ -317,10 +319,13 @@ const { t } = useI18n()
 const props = withDefaults(defineProps<{
   entry: PricingFormEntry
   platform?: string
+  modelSuggestions?: string[]
+  modelSuggestionsLoading?: boolean
   hideTokenIntervals?: boolean
   enableTimePricing?: boolean
   enableTierMultipliers?: boolean
 }>(), {
+  modelSuggestionsLoading: false,
   hideTokenIntervals: false,
   enableTimePricing: false,
   enableTierMultipliers: false,
@@ -407,7 +412,15 @@ function removeInterval(idx: number) {
   emit('update', { ...props.entry, intervals })
 }
 
+let modelPricingRequestID = 0
+
+function hasTokenPrices(entry: PricingFormEntry): boolean {
+  return entry.input_price != null || entry.output_price != null ||
+    entry.cache_write_price != null || entry.cache_write_1h_price != null || entry.cache_read_price != null
+}
+
 async function onModelsUpdate(newModels: string[]) {
+  const requestID = ++modelPricingRequestID
   const oldModels = props.entry.models
   emit('update', { ...props.entry, models: newModels })
 
@@ -416,14 +429,12 @@ async function onModelsUpdate(newModels: string[]) {
   if (addedModels.length === 0) return
 
   // 检查是否所有价格字段都为空
-  const e = props.entry
-  const hasPrice = e.input_price != null || e.output_price != null ||
-                   e.cache_write_price != null || e.cache_write_1h_price != null || e.cache_read_price != null
-  if (hasPrice) return
+  if (hasTokenPrices(props.entry)) return
 
   // 查询第一个新增模型的默认价格
   try {
     const result = await channelsAPI.getModelDefaultPricing(addedModels[0])
+    if (requestID !== modelPricingRequestID || hasTokenPrices(props.entry)) return
     if (result.found) {
       emit('update', {
         ...props.entry,
