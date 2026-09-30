@@ -231,7 +231,7 @@
           </div>
         </template>
 
-        <!-- 合并首字/总耗时的健康度列：左侧色条上端随首字档、下端随总耗时档，中段(40%-60%)短渐变过渡，便于纵向扫视整体健康状况 -->
+        <!-- 输出速度与首字/总耗时共用一列，色条继续标识延迟健康度。 -->
         <template #cell-latency="{ row }">
           <div class="flex items-stretch gap-2">
             <span
@@ -242,6 +242,12 @@
               aria-hidden="true"
             ></span>
             <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 text-xs">
+              <span class="text-gray-400 dark:text-gray-500">{{ t('usage.tokensPerSecond') }}</span>
+              <span
+                data-testid="usage-throughput"
+                class="cursor-help whitespace-nowrap font-medium tabular-nums text-gray-900 dark:text-white"
+                :title="t('usage.tokensPerSecondHint')"
+              >{{ formatUsageTokensPerSecond(row) }}<span v-if="calculateUsageTokensPerSecond(row) != null" class="ml-1 text-[11px] font-normal text-gray-500 dark:text-gray-400">tok/s</span></span>
               <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
               <span v-if="row.first_token_ms != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
               <span v-else class="text-gray-400 dark:text-gray-500">-</span>
@@ -540,6 +546,7 @@ import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { calculateUsageTokensPerSecond, formatUsageTokensPerSecond } from '@/utils/usageThroughput'
 import {
   LATENCY_BAR_CLASSES,
   LATENCY_BAR_FROM_CLASSES,
