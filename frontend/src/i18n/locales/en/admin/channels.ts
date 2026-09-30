@@ -124,6 +124,8 @@ export default {
         models: 'Models',
         modelsPlaceholder: 'Type full model name and press Enter',
         modelInputHint: 'Press Enter to add, supports paste for batch import.',
+        modelSelectPlaceholder: 'Select or search models',
+        modelSelectHint: 'Choose models from the dropdown, or enter custom names or wildcards and press Enter. Paste to add multiple models.',
         billingMode: 'Billing Mode',
         defaultPrices: 'Default prices (fallback when no interval matches)',
         inputPrice: 'Input',
