@@ -17,6 +17,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import UsageTable from '../UsageTable.vue'
+import type { AdminUsageLog } from '@/types'
 
 const messages: Record<string, string> = {
   'admin.usage.userDeletedBadge': 'Deleted',
@@ -58,6 +59,10 @@ const messages: Record<string, string> = {
   'usage.stream': 'Stream',
   'usage.sync': 'Sync',
   'usage.nativeCompactionV2': 'Compaction',
+  'usage.tokensPerSecond': 'Output speed',
+  'usage.tokensPerSecondHint': 'Output tokens divided by generation time',
+  'usage.latencyFirstToken': 'First',
+  'usage.latencyDuration': 'Total',
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
@@ -127,6 +132,55 @@ const baseImageRow = {
   image_size_source: null,
   image_size_breakdown: null,
 }
+
+describe('UsageTable output throughput', () => {
+  const tokenRow = {
+    ...baseImageRow,
+    request_type: 'ws_v2',
+    stream: true,
+    image_count: 0,
+    billing_mode: 'token',
+    output_tokens: 200,
+    first_token_ms: 2_000,
+    duration_ms: 10_000,
+  } as AdminUsageLog
+
+  const mountLatency = (row: AdminUsageLog) => mount(UsageTable, {
+    props: { data: [row], columns: [{ key: 'latency', label: 'Speed / Latency' }] },
+    global: {
+      stubs: {
+        DataTable: {
+          props: ['data'],
+          template: '<div><slot v-for="row in data" name="cell-latency" :row="row" /></div>',
+        },
+        Icon: true,
+        Teleport: true,
+      },
+    },
+  })
+
+  it('renders WS output speed alongside both timings and updates it when measurements change', async () => {
+    const wrapper = mountLatency(tokenRow)
+    expect(wrapper.get('[data-testid="usage-throughput"]').text()).toBe('25.0tok/s')
+    expect(wrapper.get('[data-testid="usage-throughput"]').attributes('title'))
+      .toBe(messages['usage.tokensPerSecondHint'])
+    expect(wrapper.text()).toContain('2.00s')
+    expect(wrapper.text()).toContain('10.00s')
+
+    await wrapper.setProps({ data: [{ ...tokenRow, output_tokens: 400 }] })
+    expect(wrapper.get('[data-testid="usage-throughput"]').text()).toBe('50.0tok/s')
+    await wrapper.setProps({ data: [{ ...tokenRow, first_token_ms: null }] })
+    expect(wrapper.get('[data-testid="usage-throughput"]').text()).toBe('-')
+    expect(wrapper.text()).toContain('10.00s')
+    wrapper.unmount()
+  })
+
+  it('renders the full-duration average for sync requests', () => {
+    const wrapper = mountLatency({ ...tokenRow, request_type: 'sync', stream: false })
+    expect(wrapper.get('[data-testid="usage-throughput"]').text()).toBe('20.0tok/s')
+    wrapper.unmount()
+  })
+})
 
 describe('admin UsageTable tooltip', () => {
   beforeEach(() => {

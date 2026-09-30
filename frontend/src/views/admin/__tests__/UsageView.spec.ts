@@ -38,6 +38,7 @@ const messages: Record<string, string> = {
 	'usage.sentUpstreamModel': 'Sent upstream model',
 	'usage.upstreamResponseModel': 'Upstream response model',
 	'usage.upstreamModelMismatch': 'Upstream model mismatch',
+	'usage.tokensPerSecond': 'Output speed',
 	'common.yes': 'Yes',
 	'common.no': 'No',
 }
@@ -772,6 +773,32 @@ describe('admin UsageView model audit export', () => {
 
 	afterEach(() => {
 		vi.useRealTimers()
+	})
+
+	it('exports rounded numeric output speeds and leaves unavailable speeds blank', async () => {
+		const timing = { output_tokens: 200, duration_ms: 10_000, first_token_ms: 2_000, total_cost: 0 }
+		exportList.mockResolvedValue({
+			items: [
+				{ ...timing, request_type: 'sync' },
+				{ ...timing, request_type: 'ws_v2' },
+				{ ...timing, request_type: 'stream', first_token_ms: null },
+				{ ...timing, request_type: 'sync', image_count: 1 },
+			],
+			total: 4,
+			pages: 1,
+		})
+		const wrapper = mountRouteFilteredUsageView()
+		vi.advanceTimersByTime(120)
+		await flushPromises()
+		await (wrapper.vm as any).exportToExcel()
+		await flushPromises()
+
+		const headers = aoaToSheet.mock.calls[0][0][0]
+		const speedColumn = headers.indexOf('Output speed (tok/s)')
+		expect(speedColumn).toBeGreaterThan(-1)
+		const rows = sheetAddAoa.mock.calls[0][1]
+		expect(rows.map((row: unknown[]) => row[speedColumn])).toEqual([20, 25, '', ''])
+		wrapper.unmount()
 	})
 
 	it('exports requested, sent, response, and mismatch as separate admin columns', async () => {
