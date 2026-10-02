@@ -12,6 +12,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/layout/__tests__/AppSidebar.intelligenceTests.spec.ts \
 	src/views/user/__tests__/IntelligenceTestsView.spec.ts \
 	src/utils/__tests__/intelligenceTestModels.spec.ts \
+	src/utils/__tests__/intelligenceTestMarkdown.spec.ts \
 	src/utils/__tests__/intelligenceTestPreview.spec.ts \
 	src/components/keys/__tests__/BulkEditKeysModal.spec.ts \
 	src/components/admin/user/__tests__/UserPlatformQuotaModal.spec.ts \

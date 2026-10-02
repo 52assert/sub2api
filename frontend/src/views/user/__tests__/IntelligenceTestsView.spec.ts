@@ -155,33 +155,54 @@ describe('shared IntelligenceTestsView', () => {
     wrapper.unmount()
   })
 
-  it('shows raw text safely when there is no renderable artifact and copies original output', async () => {
+  it('escapes HTML in Markdown answers and copies the original output', async () => {
     const finished = record({ status: 'succeeded', output: 'No artifact: <img src=x onerror=alert(1)>' })
     listIntelligenceTests.mockResolvedValue({ items: [finished], retention: 10 })
     getIntelligenceTest.mockResolvedValue(finished)
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.find('iframe').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="intelligence-test-source"]').text()).toBe(finished.output)
+    expect(wrapper.get('[data-testid="intelligence-test-markdown"]').text()).toBe(finished.output)
     expect(wrapper.find('img').exists()).toBe(false)
     await wrapper.findAll('button').find((button) => button.text() === 'intelligenceTests.copyOutput')!.trigger('click')
     expect(copyToClipboard).toHaveBeenCalledWith(finished.output, 'intelligenceTests.copied')
     wrapper.unmount()
   })
 
-  it('displays a CLI reasoning answer without artifact controls or a duplicate final message', async () => {
-    const answer = '至少取出 29 颗糖果。\n最坏情况下可取出 28 颗而不满足条件。'
+  it('renders Markdown and formulas in CLI answers while preserving the original output', async () => {
+    const answer = String.raw`最少需要 **21颗**，可以利用手感选取 **12颗五角星形和9颗圆形**。
+
+- 五角星形中，非苹果味只有 \(6+4=10\) 颗，非桃子味只有 \(7+4=11\) 颗，因此取12颗必定同时有苹果味和桃子味。
+- 圆形中，西瓜味只有8颗，因此取9颗必定有苹果味或桃子味，能与五角星形中的另一种口味配对。
+
+**为什么20颗不能保证？** 考虑最坏情况：每种形状都先摸到西瓜味，再摸到苹果味，最后摸到桃子味。
+
+- 圆形苹果味＋五角星形桃子味：至少取 \(9+12=21\) 颗。
+- 圆形桃子味＋五角星形苹果味：至少取 \(16+5=21\) 颗。
+
+所以，无论如何安排摸取的形状，20颗都可能失败，最少是 **21颗**。`
     const finished = record({ status: 'succeeded', runner: 'codex_cli', prompt: '直接回答糖果推理题，不调用工具。', output: answer, final_message: answer })
     listIntelligenceTests.mockResolvedValue({ items: [finished], retention: 10 })
     getIntelligenceTest.mockResolvedValue(finished)
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.get('[data-testid="intelligence-test-source"]').text()).toBe(answer)
+    const rendered = wrapper.get('[data-testid="intelligence-test-markdown"]')
+    expect(rendered.findAll('strong').map((node) => node.text())).toEqual(['21颗', '12颗五角星形和9颗圆形', '为什么20颗不能保证？', '21颗'])
+    expect(rendered.findAll('li')).toHaveLength(4)
+    expect(rendered.findAll('.katex')).toHaveLength(4)
+    expect(rendered.find('math').exists()).toBe(true)
     expect(wrapper.find('iframe').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="intelligence-test-source-tab"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="intelligence-test-source"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="intelligence-test-final-message"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('intelligenceTests.noPreview')
     expect(wrapper.text()).not.toContain('intelligenceTests.failed')
+    await wrapper.get('[data-testid="intelligence-test-source-tab"]').trigger('click')
+    expect(wrapper.get('[data-testid="intelligence-test-source"]').text()).toBe(answer)
+    expect(wrapper.find('[data-testid="intelligence-test-markdown"]').exists()).toBe(false)
+    await wrapper.findAll('button').find((button) => button.text() === 'intelligenceTests.copyOutput')!.trigger('click')
+    expect(copyToClipboard).toHaveBeenCalledWith(answer, 'intelligenceTests.copied')
+    await wrapper.get('[data-testid="intelligence-test-preview-tab"]').trigger('click')
+    expect(wrapper.get('[data-testid="intelligence-test-markdown"]').findAll('strong')).toHaveLength(4)
     wrapper.unmount()
   })
 
