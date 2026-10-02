@@ -88,11 +88,10 @@
             </div>
             <div v-if="selected.output" class="space-y-4 p-5">
               <div class="flex flex-wrap items-center justify-between gap-3">
-                <div v-if="preview" class="flex gap-2" role="group" :aria-label="t('intelligenceTests.result')">
-                  <button class="btn btn-sm" :class="tab === 'preview' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="tab === 'preview'" @click="tab = 'preview'">{{ t('intelligenceTests.preview') }}</button>
+                <div class="flex gap-2" role="group" :aria-label="t('intelligenceTests.result')">
+                  <button class="btn btn-sm" :class="tab === 'preview' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="tab === 'preview'" data-testid="intelligence-test-preview-tab" @click="tab = 'preview'">{{ t('intelligenceTests.preview') }}</button>
                   <button class="btn btn-sm" :class="tab === 'source' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="tab === 'source'" data-testid="intelligence-test-source-tab" @click="tab = 'source'">{{ t('intelligenceTests.source') }}</button>
                 </div>
-                <h3 v-else class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t('intelligenceTests.result') }}</h3>
                 <button class="btn btn-secondary btn-sm" @click="copyOutput">{{ t('intelligenceTests.copyOutput') }}</button>
               </div>
               <iframe
@@ -105,8 +104,8 @@
                 class="h-[65vh] min-h-[400px] w-full rounded-xl border border-gray-200 bg-white dark:border-dark-600"
                 data-testid="intelligence-test-preview"
               />
-              <pre v-else-if="preview" class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-950 p-4 text-xs text-gray-100" data-testid="intelligence-test-source"><code>{{ selected.output }}</code></pre>
-              <p v-else class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-50 p-4 text-sm leading-relaxed text-gray-900 dark:bg-dark-900 dark:text-gray-100" data-testid="intelligence-test-source">{{ selected.output }}</p>
+              <div v-else-if="tab === 'preview'" class="markdown-body intelligence-test-markdown max-h-[70vh] overflow-auto break-words rounded-xl bg-gray-50 p-4 dark:bg-dark-900" data-testid="intelligence-test-markdown" v-html="markdown" />
+              <pre v-else class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-950 p-4 text-xs text-gray-100" data-testid="intelligence-test-source"><code>{{ selected.output }}</code></pre>
             </div>
             <p v-else-if="selected.status === 'succeeded'" class="p-5 text-sm text-gray-500">{{ t('intelligenceTests.noOutput') }}</p>
           </template>
@@ -124,7 +123,10 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { getIntelligenceTest, isIntelligenceTestActive, listIntelligenceTests, type IntelligenceTestRecord, type IntelligenceTestStatus } from '@/api/intelligenceTests'
 import { buildIntelligenceTestPreview } from '@/utils/intelligenceTestPreview'
+import { renderIntelligenceTestMarkdown } from '@/utils/intelligenceTestMarkdown'
 import { useClipboard } from '@/composables/useClipboard'
+import '@/styles/announcement-markdown.css'
+import 'katex/dist/katex.min.css'
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -140,6 +142,7 @@ const listError = ref('')
 const detailError = ref('')
 const tab = ref<'preview' | 'source'>('preview')
 const preview = computed(() => selected.value?.output ? buildIntelligenceTestPreview(selected.value.output) : null)
+const markdown = computed(() => selected.value?.output && !preview.value ? renderIntelligenceTestMarkdown(selected.value.output) : '')
 let timer: ReturnType<typeof setTimeout> | undefined
 let destroyed = false
 let detailRequest = 0
@@ -187,7 +190,6 @@ async function loadSelected() {
     const record = await getIntelligenceTest(id, { signal: detailController.signal })
     if (destroyed || request !== detailRequest) return
     selected.value = record
-    if (record.output && !preview.value) tab.value = 'source'
   } catch (error) {
     if (!destroyed && request === detailRequest) detailError.value = errorMessage(error, t('intelligenceTests.loadDetailFailed'))
   } finally {
@@ -259,3 +261,11 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
+
+<style scoped>
+.intelligence-test-markdown :deep(.katex-display) {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+</style>
