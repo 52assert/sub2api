@@ -29,6 +29,14 @@ describe('intelligence test navigation visibility', () => {
     wrapper.unmount()
   })
 
+  it('places the shared results directly under My Keys', async () => {
+    const wrapper = mountSidebar()
+    await flushPromises()
+    const links = wrapper.findAll('a').map((link) => link.attributes('href') ?? '')
+    expect(links.indexOf('/intelligence-tests')).toBe(links.indexOf('/keys') + 1)
+    wrapper.unmount()
+  })
+
   it('shows the results under My Account for administrators', async () => {
     auth.isAdmin = true
     const wrapper = mountSidebar()
