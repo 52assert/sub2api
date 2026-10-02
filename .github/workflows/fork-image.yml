@@ -73,6 +73,7 @@ jobs:
           docker run --rm --entrypoint /bin/sh \
             --volume "$PWD/deploy/tests/codex-container-smoke.sh:/tmp/codex-container-smoke.sh:ro" \
             "$IMAGE@$DIGEST" /tmp/codex-container-smoke.sh
+          python3 tools/custom/test_codex_cli_container.py "$IMAGE@$DIGEST"
       - name: Publish verified custom alias
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
