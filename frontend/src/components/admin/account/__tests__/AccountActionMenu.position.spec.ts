@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import AccountActionMenu from '../AccountActionMenu.vue'
 import type { Account } from '@/types'
+import { ref } from 'vue'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key })
+  useI18n: () => ({ t: (key: string) => key, locale: ref('en') })
 }))
 
 const account = {
@@ -58,6 +59,13 @@ describe('AccountActionMenu viewport positioning', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('opens an intelligence test for the chosen account and closes the menu', async () => {
+    const wrapper = await mountMenu()
+    getMenu().querySelector<HTMLButtonElement>('[data-testid="account-intelligence-test-action"]')!.click()
+    expect(wrapper.emitted('intelligence-test')).toEqual([[account]])
+    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
   it('measures a long OAuth menu and opens above the last row', async () => {

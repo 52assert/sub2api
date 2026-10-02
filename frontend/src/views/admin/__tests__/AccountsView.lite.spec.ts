@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
-import { defineComponent } from 'vue'
+import { defineComponent, ref } from 'vue'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+import AccountIntelligenceTestModal from '@/components/admin/account/AccountIntelligenceTestModal.vue'
 
 const {
   listAccounts,
@@ -28,6 +29,9 @@ const {
   showError: vi.fn(),
   showWarning: vi.fn()
 }))
+
+const routerPush = vi.hoisted(() => vi.fn())
+vi.mock('vue-router', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-router')>(), useRouter: () => ({ push: routerPush }) }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
@@ -58,7 +62,7 @@ vi.mock('@/stores/auth', () => ({
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
-  return { ...actual, useI18n: () => ({ t: (key: string) => key }) }
+  return { ...actual, useI18n: () => ({ t: (key: string) => key, locale: ref('en') }) }
 })
 
 const DataTableStub = defineComponent({
@@ -110,6 +114,8 @@ function mountView(stubActionMenu = true) {
         ImportDataModal: true,
         ReAuthAccountModal: true,
         AccountTestModal: AccountTestModalStub,
+        AccountIntelligenceTestModal: { props: ['show', 'account'], template: '<div data-test="intelligence-test-account">{{ show ? account?.name : "" }}</div>' },
+        AccountSubscriptionResetModal: true,
         AccountStatsModal: AccountStatsModalStub,
         ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
@@ -158,6 +164,7 @@ const fullAccount = {
 
 describe('admin AccountsView lite account list', () => {
   beforeEach(() => {
+    routerPush.mockReset()
     localStorage.clear()
     listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockReset().mockResolvedValue({ notModified: true, etag: 'compact-etag', data: null })
@@ -169,6 +176,18 @@ describe('admin AccountsView lite account list', () => {
     refreshCredentials.mockReset()
     showError.mockReset()
     showWarning.mockReset()
+  })
+
+  it('loads the full account to start an intelligence test and opens the accepted background result', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.findComponent(AccountActionMenu).vm.$emit('intelligence-test', listRow)
+    await flushPromises()
+    expect(getById).toHaveBeenCalledWith(42)
+    expect(wrapper.get('[data-test="intelligence-test-account"]').text()).toBe(fullAccount.name)
+    wrapper.findComponent(AccountIntelligenceTestModal).vm.$emit('created', { id: 17, status: 'queued' })
+    expect(routerPush).toHaveBeenCalledWith({ path: '/intelligence-tests', query: { test: '17' } })
+    wrapper.unmount()
   })
 
   afterEach(() => {

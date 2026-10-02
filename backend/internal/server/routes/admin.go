@@ -391,6 +391,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/opencode-go-usage/refresh", h.Admin.Account.RefreshOpenCodeGoUsage)
 		accounts.DELETE("/:id", h.Admin.Account.Delete)
 		accounts.POST("/:id/test", h.Admin.Account.Test)
+		accounts.POST("/:id/intelligence-tests", h.IntelligenceTest.Create)
 		accounts.GET("/:id/subscription-reset", h.Admin.Account.SubscriptionResetPreview)
 		accounts.PUT("/:id/subscription-reset", h.Admin.Account.ConfigureSubscriptionReset)
 		accounts.POST("/:id/subscription-reset", h.Admin.Account.ResetGroupSubscriptions)

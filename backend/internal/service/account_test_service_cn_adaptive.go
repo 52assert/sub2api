@@ -67,6 +67,9 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create adaptive Anthropic test payload")
 	}
+	if err := applyIntelligencePayload(ctx, "anthropic", testModelID, payload, false); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过原生 /v1/messages 测试自适应 Anthropic 端点"})
@@ -163,6 +166,9 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 	apiURL := buildOpenAIResponsesURLForPlatform(account.Platform, baseURL)
 
 	payload := createOpenAITestPayload(testModelID, false)
+	if err := applyIntelligencePayload(ctx, "responses", testModelID, payload, false); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
 	// DeepSeek / Kimi native Responses endpoints are stateless and do not need
 	// the OpenAI probe's synthetic instructions.
 	delete(payload, "instructions")
@@ -174,7 +180,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create adaptive Responses request")
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(accountTestUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+authToken)
@@ -251,6 +257,9 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 	payload, err := createTestPayload(testModelID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Anthropic test payload")
+	}
+	if err := applyIntelligencePayload(ctx, "anthropic", testModelID, payload, false); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
