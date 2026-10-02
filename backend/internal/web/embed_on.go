@@ -149,14 +149,11 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 	// Check cache first
 	cached := s.cache.Get()
 	if cached != nil {
-		// Check If-None-Match for 304 response
-		if match := c.GetHeader("If-None-Match"); match == cached.ETag {
-			c.Status(http.StatusNotModified)
-			c.Abort()
-			return
-		}
-
-		// Replace nonce placeholder with actual nonce before serving
+		// Always answer with the full document instead of a 304: the body embeds
+		// this request's CSP nonce. A conditional response would let the browser
+		// keep an older cached body while replacing the cached policy header
+		// with the new nonce, blocking inline scripts (for example the
+		// intelligence-test preview) until a hard reload.
 		content := replaceNoncePlaceholder(cached.Content, nonce)
 
 		c.Header("ETag", cached.ETag)
