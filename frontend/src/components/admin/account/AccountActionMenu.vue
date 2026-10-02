@@ -15,7 +15,7 @@
               <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
               {{ t('admin.accounts.testConnection') }}
             </button>
-            <button @click="$emit('intelligence-test', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700" data-testid="account-intelligence-test-action">
+            <button v-if="account.platform !== 'typesafe'" @click="$emit('intelligence-test', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700" data-testid="account-intelligence-test-action">
               <Icon name="sparkles" size="sm" class="text-violet-500" />
               {{ t('intelligenceTests.title') }}
             </button>

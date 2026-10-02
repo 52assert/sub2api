@@ -194,6 +194,16 @@ func TestIntelligenceValidationUsesMappedTextModelAndChecksEffort(t *testing.T) 
 	require.Equal(t, "low", payload["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)["thinkingLevel"])
 }
 
+func TestRunIntelligenceTestRejectsTypeSafeBeforeCallingUpstream(t *testing.T) {
+	account := adaptiveCNAccountTestAccount(9202, PlatformTypeSafe)
+	svc, upstream := adaptiveCNAccountTestService(account, adaptiveCNChatTestResponse())
+	err := svc.ValidateIntelligenceTest(account, "jev-latest", "default")
+	require.ErrorContains(t, err, "TypeSafe 不支持生成 HTML / SVG")
+	_, err = svc.RunIntelligenceTest(context.Background(), account.ID, "jev-latest", "Generate SVG", "default")
+	require.ErrorContains(t, err, "TypeSafe 不支持生成 HTML / SVG")
+	require.Empty(t, upstream.requests)
+}
+
 func TestRunIntelligenceTestPropagatesReadFailureAndCancellation(t *testing.T) {
 	account := adaptiveCNAccountTestAccount(9202, PlatformOpenAI)
 	account.Credentials["base_url"] = "http://upstream.example"

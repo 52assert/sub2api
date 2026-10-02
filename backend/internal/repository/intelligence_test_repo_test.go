@@ -12,7 +12,7 @@ import (
 )
 
 var intelligenceTestMockColumns = []string{
-	"id", "account_id", "platform", "model", "reasoning_effort", "prompt",
+	"id", "account_id", "account_name", "platform", "model", "reasoning_effort", "prompt",
 	"status", "created_at", "started_at", "completed_at", "duration_ms", "output", "error",
 }
 
@@ -43,12 +43,13 @@ func TestIntelligenceTestRepositoryClaimsWithGlobalCapacityAndSkipLocked(t *test
 	mock.ExpectQuery(`(?s)UPDATE intelligence_tests.*status = 'running'.*COUNT\(\*\).*status = 'running'\) < \$1.*FOR UPDATE SKIP LOCKED.*RETURNING`).
 		WithArgs(2).
 		WillReturnRows(sqlmock.NewRows(intelligenceTestMockColumns).
-			AddRow(4, 12, "openai", "model", "high", "prompt", "running", now, now, nil, 0, "", ""))
+			AddRow(4, 12, "Test account", "openai", "model", "high", "prompt", "running", now, now, nil, 0, "", ""))
 	mock.ExpectCommit()
 	item, err := NewIntelligenceTestRepository(db).ClaimNext(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, int64(4), item.ID)
 	require.Equal(t, int64(12), item.AccountID)
+	require.Equal(t, "Test account", item.AccountName)
 	require.NotNil(t, item.StartedAt)
 	require.Nil(t, item.CompletedAt)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -111,12 +112,50 @@ func TestIntelligenceTestRepositoryPublicListOmitsPrivateAccountAndOutput(t *tes
 	now := time.Now().UTC()
 	mock.ExpectQuery(`(?s)SELECT id, 0 AS account_id.*'' AS output.*ORDER BY created_at DESC, id DESC`).
 		WillReturnRows(sqlmock.NewRows(intelligenceTestMockColumns).
-			AddRow(4, 0, "openai", "model", "high", "prompt", "succeeded", now, now, now, 123, "", ""))
+			AddRow(4, 0, "Test account", "openai", "model", "high", "prompt", "succeeded", now, now, now, 123, "", ""))
 	items, err := NewIntelligenceTestRepository(db).List(context.Background())
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	require.Zero(t, items[0].AccountID)
+	require.Equal(t, "Test account", items[0].AccountName)
 	require.Empty(t, items[0].Output)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIntelligenceTestRepositoryPersistsAccountNameSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	expectIntelligenceTestLock(mock)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM intelligence_tests`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	now := time.Now().UTC()
+	mock.ExpectQuery(`(?s)INSERT INTO intelligence_tests.*account_id, account_name.*RETURNING`).
+		WithArgs(int64(12), "Test account", "openai", "model", "high", "prompt").
+		WillReturnRows(sqlmock.NewRows(intelligenceTestMockColumns).
+			AddRow(4, 12, "Test account", "openai", "model", "high", "prompt", "queued", now, nil, nil, 0, "", ""))
+	mock.ExpectCommit()
+	item := &service.IntelligenceTest{AccountID: 12, AccountName: "Test account", Platform: "openai", Model: "model", ReasoningEffort: "high", Prompt: "prompt"}
+	require.NoError(t, NewIntelligenceTestRepository(db).Create(context.Background(), item))
+	require.Equal(t, "Test account", item.AccountName)
+	require.Equal(t, int64(4), item.ID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIntelligenceTestRepositoryDetailIncludesAccountNameAndOutput(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	now := time.Now().UTC()
+	mock.ExpectQuery(`(?s)SELECT id, COALESCE\(account_id, 0\), account_name.*FROM intelligence_tests WHERE id = \$1`).
+		WithArgs(int64(4)).
+		WillReturnRows(sqlmock.NewRows(intelligenceTestMockColumns).
+			AddRow(4, 0, "Deleted account snapshot", "openai", "model", "high", "prompt", "succeeded", now, now, now, 123, "<svg/>", ""))
+	item, err := NewIntelligenceTestRepository(db).GetByID(context.Background(), 4)
+	require.NoError(t, err)
+	require.Equal(t, "Deleted account snapshot", item.AccountName)
+	require.Equal(t, "<svg/>", item.Output)
+	require.Zero(t, item.AccountID)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

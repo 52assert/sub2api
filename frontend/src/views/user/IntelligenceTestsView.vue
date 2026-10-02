@@ -31,6 +31,7 @@
               <span class="break-all font-medium text-gray-900 dark:text-gray-100">{{ record.model }}</span>
               <span class="shrink-0 rounded-full px-2 py-1 text-xs font-medium" :class="statusClass(record.status)">{{ t(`intelligenceTests.statuses.${record.status}`) }}</span>
             </div>
+            <p class="break-all text-xs text-gray-600 dark:text-gray-300">{{ t('intelligenceTests.account') }}: {{ accountName(record) }}</p>
             <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
               <span>{{ record.platform }}</span>
               <span>{{ t(`intelligenceTests.efforts.${record.reasoning_effort || 'default'}`) }}</span>
@@ -52,6 +53,7 @@
                 <span class="rounded-full px-3 py-1 text-xs font-medium" :class="statusClass(selected.status)">{{ t(`intelligenceTests.statuses.${selected.status}`) }}</span>
               </div>
               <dl class="grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.account') }}</dt><dd class="mt-1 break-all text-gray-900 dark:text-gray-100" data-testid="intelligence-test-account">{{ accountName(selected) }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.platform') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ selected.platform }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.reasoningEffort') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ t(`intelligenceTests.efforts.${selected.reasoning_effort || 'default'}`) }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.duration') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ selected.duration_ms > 0 ? formatDuration(selected.duration_ms) : '—' }}</dd></div>
@@ -143,6 +145,10 @@ function formatTime(value?: string): string {
 
 function formatDuration(milliseconds: number): string {
   return t('intelligenceTests.durationSeconds', { seconds: (milliseconds / 1000).toFixed(1) })
+}
+
+function accountName(record: IntelligenceTestRecord): string {
+  return record.account_name?.trim() || t('intelligenceTests.unknownAccount')
 }
 
 function statusClass(status: IntelligenceTestStatus): string {

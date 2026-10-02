@@ -28,19 +28,19 @@ func NewIntelligenceTestRepository(db *sql.DB) service.IntelligenceTestRepositor
 // lock. They finish before upstream IO, including when several servers run workers.
 const intelligenceTestLockSQL = `SELECT pg_advisory_xact_lock(244, 1)`
 
-const intelligenceTestColumns = `id, COALESCE(account_id, 0), platform, model,
+const intelligenceTestColumns = `id, COALESCE(account_id, 0), account_name, platform, model,
 reasoning_effort, prompt, status, created_at, started_at, completed_at,
 duration_ms, output, error`
 
 // Public listings omit both the private account identifier and generated output.
-const intelligenceTestListColumns = `id, 0 AS account_id, platform, model,
+const intelligenceTestListColumns = `id, 0 AS account_id, account_name, platform, model,
 reasoning_effort, prompt, status, created_at, started_at, completed_at,
 duration_ms, '' AS output, error`
 
 func scanIntelligenceTest(scan func(...any) error) (*service.IntelligenceTest, error) {
 	item := &service.IntelligenceTest{}
 	var startedAt, completedAt sql.NullTime
-	if err := scan(&item.ID, &item.AccountID, &item.Platform, &item.Model,
+	if err := scan(&item.ID, &item.AccountID, &item.AccountName, &item.Platform, &item.Model,
 		&item.ReasoningEffort, &item.Prompt, &item.Status, &item.CreatedAt,
 		&startedAt, &completedAt, &item.DurationMS, &item.Output, &item.Error); err != nil {
 		return nil, err
@@ -88,9 +88,9 @@ WHERE status IN ('queued', 'running')`).Scan(&outstanding); err != nil {
 		accountID = item.AccountID
 	}
 	created, err := scanIntelligenceTest(tx.QueryRowContext(ctx, `INSERT INTO intelligence_tests
-(account_id, platform, model, reasoning_effort, prompt)
-VALUES ($1, $2, $3, $4, $5) RETURNING `+intelligenceTestColumns,
-		accountID, item.Platform, item.Model, item.ReasoningEffort, item.Prompt).Scan)
+(account_id, account_name, platform, model, reasoning_effort, prompt)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+intelligenceTestColumns,
+		accountID, item.AccountName, item.Platform, item.Model, item.ReasoningEffort, item.Prompt).Scan)
 	if err != nil {
 		return err
 	}

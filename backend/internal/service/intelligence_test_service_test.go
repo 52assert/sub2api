@@ -55,10 +55,16 @@ func (r *intelligenceTestMemoryRepo) GetByID(context.Context, int64) (*Intellige
 }
 func (r *intelligenceTestMemoryRepo) RecoverInterrupted(context.Context, time.Time) error { return nil }
 
-type intelligenceTestAccounts struct{ AccountRepository }
+type intelligenceTestAccounts struct {
+	AccountRepository
+	account *Account
+}
 
-func (intelligenceTestAccounts) GetByID(context.Context, int64) (*Account, error) {
-	return &Account{ID: 1, Platform: PlatformOpenAI}, nil
+func (r intelligenceTestAccounts) GetByID(context.Context, int64) (*Account, error) {
+	if r.account != nil {
+		return r.account, nil
+	}
+	return &Account{ID: 1, Name: "Test account", Platform: PlatformOpenAI}, nil
 }
 
 type intelligenceTestGeneratorStub struct {
@@ -186,4 +192,17 @@ func TestIntelligenceTestInputValidationAndDefaultPrompt(t *testing.T) {
 	require.Error(t, err)
 	_, err = svc.Create(context.Background(), 1, "gpt-test", "unexpected", "")
 	require.Error(t, err)
+}
+
+func TestIntelligenceTestSnapshotsAccountNameWhenSubmitted(t *testing.T) {
+	svc, repo := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
+	account := &Account{ID: 1, Name: "测试来源账号", Platform: PlatformOpenAI}
+	svc.accounts = intelligenceTestAccounts{account: account}
+	record, err := svc.Create(context.Background(), account.ID, "gpt-test", "default", "")
+	require.NoError(t, err)
+	account.Name = "Renamed account"
+	require.Equal(t, "测试来源账号", record.AccountName)
+	svc.Start()
+	result := awaitIntelligenceResult(t, repo)
+	require.Equal(t, "测试来源账号", result.AccountName)
 }

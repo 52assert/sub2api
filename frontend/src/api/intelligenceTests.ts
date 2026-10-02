@@ -5,6 +5,7 @@ export type IntelligenceTestEffort = 'default' | 'none' | 'minimal' | 'low' | 'm
 
 export interface IntelligenceTestRecord {
   id: number
+  account_name: string
   platform: string
   model: string
   reasoning_effort: IntelligenceTestEffort
