@@ -79,7 +79,7 @@ def tool_command():
         "if printf CHANGED > " + MOUNT + "/service-secret.txt 2>/dev/null; then",
         "  echo SERVICE_WRITABLE; exit 92",
         "else echo SERVICE_WRITE_BLOCKED; fi",
-        "if test -r /proc/self/environ; then echo PROC_READABLE; exit 93; fi",
+        "if cat /proc/self/environ >/dev/null 2>&1; then echo PROC_READABLE; exit 93; fi",
         "echo PROC_READ_BLOCKED",
     ])
 
@@ -275,7 +275,8 @@ def run_smoke(image):
                     "HTTP_PROXY": url, "HTTPS_PROXY": url, "ALL_PROXY": url, "NO_PROXY": "127.0.0.1,localhost,::1",
                     "PROBE_PARENT_SECRET": FAKE_ENV,
                 }
-                command = [docker, "run", "--rm", "--name", name, "--network", "host", "--user", "1000:1000",
+                command = [docker, "run", "--rm", "--interactive", "--name", name, "--network", "host",
+                           "--user", "1000:1000",
                            "--volume", volume, "--workdir", WORK, "--entrypoint", "/usr/bin/env", image, "-i"]
                 command.extend(key + "=" + value for key, value in environment.items())
                 command.extend(["/usr/local/bin/codex-test-sandbox", "/usr/local/bin/codex", TASK, "--"])
