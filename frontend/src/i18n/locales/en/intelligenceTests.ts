@@ -1,7 +1,7 @@
 export default {
   intelligenceTests: {
     title: 'Intelligence Test',
-    description: 'Browse generated artifacts and model test records',
+    description: 'Browse model answers, generated artifacts, and test records',
     model: 'Model',
     selectModel: 'Select a model',
     runner: 'Execution method',
