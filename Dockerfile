@@ -123,7 +123,7 @@ RUN apk add --no-cache ca-certificates curl && \
     echo "$checksum  /tmp/codex.tar.gz" | sha256sum -c - && \
     mkdir -p /opt/codex && \
     tar -xzf /tmp/codex.tar.gz -C /opt/codex \
-      bin codex-package.json codex-path codex-resources/bwrap codex-resources/zsh && \
+      bin codex-package.json codex-path codex-resources/bwrap && \
     rm /tmp/codex.tar.gz
 
 # -----------------------------------------------------------------------------
@@ -138,6 +138,7 @@ LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
 
 # Install runtime dependencies
 RUN apk add --no-cache \
+    bash \
     ca-certificates \
     tzdata \
     su-exec \
@@ -156,7 +157,8 @@ COPY --from=pg-client /usr/local/bin/psql /usr/local/bin/psql
 COPY --from=pg-client /usr/local/lib/libpq.so.5* /usr/local/lib/
 
 # Preserve the upstream package layout so CLI sandbox and tool helpers resolve.
-# Voice resources are omitted: intelligence tests generate text/HTML/SVG only.
+# Optional voice and experimental zsh bridge resources are omitted. The latter
+# is glibc-linked even in the musl package; the CLI uses Alpine's native bash.
 COPY --from=codex-cli /opt/codex /opt/codex
 COPY --from=backend-builder /app/codex-test-sandbox /usr/local/bin/codex-test-sandbox
 RUN for alias in codex codex-linux-sandbox codex-execve-wrapper apply_patch applypatch; do \
