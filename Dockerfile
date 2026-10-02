@@ -4,7 +4,9 @@
 # =============================================================================
 # Stage 1: Build frontend
 # Stage 2: Build Go backend with embedded frontend
-# Stage 3: Final minimal image
+# Stage 3: PostgreSQL client
+# Stage 4: Official Codex CLI
+# Stage 5: Runtime image
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
@@ -96,7 +98,9 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
     -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=${BUILD_TYPE} -X github.com/Wei-Shaw/sub2api/internal/service.CustomBuildRevision=${COMMIT}" \
     -trimpath \
     -o /app/sub2api \
-    ./cmd/server
+    ./cmd/server && \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w" -trimpath -o /app/codex-test-sandbox ./cmd/codex-test-sandbox
 
 # -----------------------------------------------------------------------------
 # Stage 3: PostgreSQL Client (version-matched with docker-compose)
@@ -104,7 +108,26 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
 FROM ${POSTGRES_IMAGE} AS pg-client
 
 # -----------------------------------------------------------------------------
-# Stage 4: Final Runtime Image
+# Stage 4: Official Codex CLI (download on the native build platform)
+# -----------------------------------------------------------------------------
+FROM --platform=${BUILDPLATFORM} ${ALPINE_IMAGE} AS codex-cli
+ARG TARGETARCH
+RUN apk add --no-cache ca-certificates curl && \
+    case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-musl; checksum=4fcc47ab57f52ff75363951a8761146cd10c8288bd86fed45487dbb204a16b71 ;; \
+      arm64) target=aarch64-unknown-linux-musl; checksum=7f0fe42ff22ecfa3a47bc4a34f5b22c4218b431a4ec0aba51c7d98299f07900c ;; \
+      *) echo "Unsupported Codex architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    curl --fail --location --retry 5 --output /tmp/codex.tar.gz \
+      "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-package-${target}.tar.gz" && \
+    echo "$checksum  /tmp/codex.tar.gz" | sha256sum -c - && \
+    mkdir -p /opt/codex && \
+    tar -xzf /tmp/codex.tar.gz -C /opt/codex \
+      bin codex-package.json codex-path codex-resources/bwrap && \
+    rm /tmp/codex.tar.gz
+
+# -----------------------------------------------------------------------------
+# Stage 5: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
 
@@ -115,6 +138,7 @@ LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
 
 # Install runtime dependencies
 RUN apk add --no-cache \
+    bash \
     ca-certificates \
     tzdata \
     su-exec \
@@ -131,6 +155,15 @@ RUN apk add --no-cache \
 COPY --from=pg-client /usr/local/bin/pg_dump /usr/local/bin/pg_dump
 COPY --from=pg-client /usr/local/bin/psql /usr/local/bin/psql
 COPY --from=pg-client /usr/local/lib/libpq.so.5* /usr/local/lib/
+
+# Preserve the upstream package layout so CLI sandbox and tool helpers resolve.
+# Optional voice and experimental zsh bridge resources are omitted. The latter
+# is glibc-linked even in the musl package; the CLI uses Alpine's native bash.
+COPY --from=codex-cli /opt/codex /opt/codex
+COPY --from=backend-builder /app/codex-test-sandbox /usr/local/bin/codex-test-sandbox
+RUN for alias in codex codex-linux-sandbox codex-execve-wrapper apply_patch applypatch; do \
+      ln -s /opt/codex/bin/codex "/usr/local/bin/$alias"; \
+    done
 
 # Create non-root user
 RUN addgroup -g 1000 sub2api && \

@@ -11,7 +11,7 @@ vi.mock('@/composables/useClipboard', () => ({ useClipboard: () => ({ copyToClip
 vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, locale: ref('en') }) }))
 
 function record(overrides: Partial<IntelligenceTestRecord> = {}): IntelligenceTestRecord {
-  return { id: 1, account_name: 'Test account', platform: 'openai', model: 'gpt-test', reasoning_effort: 'high', prompt: 'Animate a cycling pelican', status: 'running', created_at: '2026-10-02T00:00:00Z', duration_ms: 0, ...overrides }
+  return { id: 1, account_name: 'Test account', platform: 'openai', model: 'gpt-test', runner: 'http', runner_version: '', effective_model: '', artifact_name: '', final_message: '', reasoning_effort: 'high', prompt: 'Animate a cycling pelican', status: 'running', created_at: '2026-10-02T00:00:00Z', duration_ms: 0, ...overrides }
 }
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -89,6 +89,52 @@ describe('shared IntelligenceTestsView', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="intelligence-test-record-1"]').text()).toContain('intelligenceTests.unknownAccount')
     expect(wrapper.get('[data-testid="intelligence-test-account"]').text()).toBe('intelligenceTests.unknownAccount')
+    wrapper.unmount()
+  })
+
+  it('shows execution provenance and keeps the final message separate from the HTML artifact', async () => {
+    const finished = record({
+      status: 'succeeded', runner: 'codex_cli', runner_version: '0.120.0', effective_model: 'gpt-actual', artifact_name: 'pelican-bicycle.html',
+      final_message: 'Created <img src=x onerror=alert(1)>', output: '<html><body>Animated pelican</body></html>'
+    })
+    listIntelligenceTests.mockResolvedValue({ items: [finished], retention: 10 })
+    getIntelligenceTest.mockResolvedValue(finished)
+    const wrapper = mountView()
+    await flushPromises()
+    const item = wrapper.get('[data-testid="intelligence-test-record-1"]')
+    for (const text of ['intelligenceTests.runners.codex_cli', '0.120.0', 'gpt-actual', 'pelican-bicycle.html']) {
+      expect(item.text()).toContain(text)
+      expect(wrapper.get('section').text()).toContain(text)
+    }
+    const finalMessage = wrapper.get('[data-testid="intelligence-test-final-message"]')
+    expect(finalMessage.element.tagName).toBe('DETAILS')
+    expect(finalMessage.text()).toContain(finished.final_message)
+    expect(finalMessage.find('img').exists()).toBe(false)
+    expect(wrapper.get('iframe').attributes('srcdoc')).toContain('Animated pelican')
+    expect(wrapper.get('iframe').attributes('srcdoc')).not.toContain('onerror')
+    wrapper.unmount()
+  })
+
+  it('treats historical records without execution metadata as HTTP tests', async () => {
+    const historical = record({ runner: undefined, runner_version: undefined, effective_model: undefined, artifact_name: undefined, final_message: undefined })
+    listIntelligenceTests.mockResolvedValue({ items: [historical], retention: 10 })
+    getIntelligenceTest.mockResolvedValue(historical)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="intelligence-test-record-1"]').text()).toContain('intelligenceTests.runners.http')
+    expect(wrapper.get('[data-testid="intelligence-test-runner"]').text()).toBe('intelligenceTests.runners.http')
+    expect(wrapper.get('section').text()).not.toContain('intelligenceTests.runnerVersion')
+    expect(wrapper.find('[data-testid="intelligence-test-final-message"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('omits redundant actual model metadata when no mapping changed the model', async () => {
+    const finished = record({ status: 'succeeded', effective_model: 'gpt-test' })
+    listIntelligenceTests.mockResolvedValue({ items: [finished], retention: 10 })
+    getIntelligenceTest.mockResolvedValue(finished)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('intelligenceTests.effectiveModel')
     wrapper.unmount()
   })
 

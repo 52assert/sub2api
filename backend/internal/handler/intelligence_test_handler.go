@@ -27,12 +27,13 @@ func (h *IntelligenceTestHandler) Create(c *gin.Context) {
 		Model           string `json:"model" binding:"required,max=200"`
 		ReasoningEffort string `json:"reasoning_effort" binding:"max=16"`
 		Prompt          string `json:"prompt" binding:"max=32768"`
+		Runner          string `json:"runner" binding:"omitempty,oneof=http codex_cli"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid model, thinking level or prompt")
 		return
 	}
-	record, err := h.tests.Create(c.Request.Context(), id, req.Model, req.ReasoningEffort, req.Prompt)
+	record, err := h.tests.Create(c.Request.Context(), id, req.Model, req.ReasoningEffort, req.Prompt, req.Runner)
 	if response.ErrorFrom(c, err) {
 		return
 	}

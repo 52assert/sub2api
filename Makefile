@@ -8,6 +8,11 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
 	src/components/account/__tests__/OpenAIQuotaResetCell.spark_shadow.spec.ts \
+	src/components/admin/account/__tests__/AccountIntelligenceTestModal.spec.ts \
+	src/components/layout/__tests__/AppSidebar.intelligenceTests.spec.ts \
+	src/views/user/__tests__/IntelligenceTestsView.spec.ts \
+	src/utils/__tests__/intelligenceTestModels.spec.ts \
+	src/utils/__tests__/intelligenceTestPreview.spec.ts \
 	src/components/keys/__tests__/BulkEditKeysModal.spec.ts \
 	src/components/admin/user/__tests__/UserPlatformQuotaModal.spec.ts \
 	src/views/user/__tests__/KeysView.spec.ts \

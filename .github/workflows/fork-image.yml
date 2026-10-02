@@ -68,6 +68,12 @@ jobs:
           docker pull "$IMAGE@$DIGEST"
           docker run --rm --entrypoint /app/sub2api "$IMAGE@$DIGEST" -version 2>&1 | tee /tmp/custom-version.txt
           grep -F -- "$VERSION" /tmp/custom-version.txt
+          docker run --rm --user 1000:1000 --entrypoint /usr/local/bin/codex "$IMAGE@$DIGEST" --version 2>&1 | tee /tmp/custom-codex-version.txt
+          grep -Fx 'codex-cli 0.160.0' /tmp/custom-codex-version.txt
+          docker run --rm --entrypoint /bin/sh \
+            --volume "$PWD/deploy/tests/codex-container-smoke.sh:/tmp/codex-container-smoke.sh:ro" \
+            "$IMAGE@$DIGEST" /tmp/codex-container-smoke.sh
+          python3 tools/custom/test_codex_cli_container.py "$IMAGE@$DIGEST"
       - name: Publish verified custom alias
         env:
           IMAGE: ${{ steps.meta.outputs.image }}

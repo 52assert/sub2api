@@ -206,3 +206,37 @@ func TestIntelligenceTestSnapshotsAccountNameWhenSubmitted(t *testing.T) {
 	result := awaitIntelligenceResult(t, repo)
 	require.Equal(t, "测试来源账号", result.AccountName)
 }
+
+type intelligenceTestDetailedStub struct {
+	*intelligenceTestGeneratorStub
+}
+
+func (*intelligenceTestDetailedStub) ValidateIntelligenceTestRunner(context.Context, *Account, string, string, string) error {
+	return nil
+}
+
+func (*intelligenceTestDetailedStub) RunIntelligenceTestDetailed(context.Context, int64, string, string, string, string) (IntelligenceTestGenerationResult, error) {
+	return IntelligenceTestGenerationResult{Output: "<svg></svg>", RunnerVersion: "0.160.0", EffectiveModel: "mapped-model", ArtifactName: "index.html", FinalMessage: "Generated HTML"}, nil
+}
+
+func TestIntelligenceTestPersistsDetailedRunnerResultAndKeepsHTTPDefault(t *testing.T) {
+	svc, repo := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
+	svc.generator = &intelligenceTestDetailedStub{intelligenceTestGeneratorStub: &intelligenceTestGeneratorStub{}}
+	record, err := svc.Create(context.Background(), 1, "public-model", "high", "", IntelligenceTestRunnerCodex)
+	require.NoError(t, err)
+	require.Equal(t, IntelligenceTestRunnerCodex, record.Runner)
+	svc.Start()
+	result := awaitIntelligenceResult(t, repo)
+	require.Equal(t, "mapped-model", result.EffectiveModel)
+	require.Equal(t, "0.160.0", result.RunnerVersion)
+	require.Equal(t, "index.html", result.ArtifactName)
+	require.Equal(t, "Generated HTML", result.FinalMessage)
+	_, err = svc.Create(context.Background(), 1, "public-model", "high", "", "invalid-runner")
+	require.Error(t, err)
+	legacy, _ := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
+	defaultRecord, err := legacy.Create(context.Background(), 1, "public-model", "high", "")
+	require.NoError(t, err)
+	require.Equal(t, IntelligenceTestRunnerHTTP, defaultRecord.Runner)
+	_, err = legacy.Create(context.Background(), 1, "public-model", "high", "", IntelligenceTestRunnerCodex)
+	require.Error(t, err)
+}
