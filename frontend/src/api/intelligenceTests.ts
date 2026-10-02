@@ -2,12 +2,18 @@ import { apiClient } from './client'
 
 export type IntelligenceTestStatus = 'queued' | 'running' | 'succeeded' | 'failed'
 export type IntelligenceTestEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type IntelligenceTestRunner = 'http' | 'codex_cli'
 
 export interface IntelligenceTestRecord {
   id: number
   account_name: string
   platform: string
   model: string
+  runner: IntelligenceTestRunner
+  runner_version: string
+  effective_model: string
+  artifact_name: string
+  final_message: string
   reasoning_effort: IntelligenceTestEffort
   prompt: string
   status: IntelligenceTestStatus
@@ -21,6 +27,7 @@ export interface IntelligenceTestRecord {
 
 export interface CreateIntelligenceTestRequest {
   model: string
+  runner?: IntelligenceTestRunner
   reasoning_effort: IntelligenceTestEffort
   prompt: string
 }

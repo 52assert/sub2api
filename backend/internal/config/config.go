@@ -106,9 +106,16 @@ type Config struct {
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
+	IntelligenceTest        IntelligenceTestConfig        `mapstructure:"intelligence_test"`
 
 	// Enforce only API-key spending windows in simple mode.
 	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
+}
+
+// IntelligenceTestConfig points at the native CLI installed in the backend runtime.
+type IntelligenceTestConfig struct {
+	CLIPath     string `mapstructure:"cli_path"`
+	SandboxPath string `mapstructure:"sandbox_path"`
 }
 
 // SimpleModeConfig controls startup behavior in simple mode.
@@ -2428,6 +2435,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
+	viper.SetDefault("intelligence_test.cli_path", "/usr/local/bin/codex")
+	viper.SetDefault("intelligence_test.sandbox_path", "/usr/local/bin/codex-test-sandbox")
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)

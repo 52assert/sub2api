@@ -30,19 +30,20 @@ const intelligenceTestLockSQL = `SELECT pg_advisory_xact_lock(244, 1)`
 
 const intelligenceTestColumns = `id, COALESCE(account_id, 0), account_name, platform, model,
 reasoning_effort, prompt, status, created_at, started_at, completed_at,
-duration_ms, output, error`
+duration_ms, output, error, runner, runner_version, effective_model, artifact_name, final_message`
 
 // Public listings omit both the private account identifier and generated output.
 const intelligenceTestListColumns = `id, 0 AS account_id, account_name, platform, model,
 reasoning_effort, prompt, status, created_at, started_at, completed_at,
-duration_ms, '' AS output, error`
+duration_ms, '' AS output, error, runner, runner_version, effective_model, artifact_name, '' AS final_message`
 
 func scanIntelligenceTest(scan func(...any) error) (*service.IntelligenceTest, error) {
 	item := &service.IntelligenceTest{}
 	var startedAt, completedAt sql.NullTime
 	if err := scan(&item.ID, &item.AccountID, &item.AccountName, &item.Platform, &item.Model,
 		&item.ReasoningEffort, &item.Prompt, &item.Status, &item.CreatedAt,
-		&startedAt, &completedAt, &item.DurationMS, &item.Output, &item.Error); err != nil {
+		&startedAt, &completedAt, &item.DurationMS, &item.Output, &item.Error,
+		&item.Runner, &item.RunnerVersion, &item.EffectiveModel, &item.ArtifactName, &item.FinalMessage); err != nil {
 		return nil, err
 	}
 	if startedAt.Valid {
@@ -87,10 +88,13 @@ WHERE status IN ('queued', 'running')`).Scan(&outstanding); err != nil {
 	if item.AccountID > 0 {
 		accountID = item.AccountID
 	}
+	if item.Runner == "" {
+		item.Runner = service.IntelligenceTestRunnerHTTP
+	}
 	created, err := scanIntelligenceTest(tx.QueryRowContext(ctx, `INSERT INTO intelligence_tests
-(account_id, account_name, platform, model, reasoning_effort, prompt)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+intelligenceTestColumns,
-		accountID, item.AccountName, item.Platform, item.Model, item.ReasoningEffort, item.Prompt).Scan)
+(account_id, account_name, platform, model, reasoning_effort, prompt, runner)
+VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+intelligenceTestColumns,
+		accountID, item.AccountName, item.Platform, item.Model, item.ReasoningEffort, item.Prompt, item.Runner).Scan)
 	if err != nil {
 		return err
 	}
@@ -161,9 +165,10 @@ func (r *intelligenceTestRepository) Finish(ctx context.Context, item *service.I
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `UPDATE intelligence_tests
-SET status = $2, completed_at = $3, duration_ms = $4, output = $5, error = $6
+SET status = $2, completed_at = $3, duration_ms = $4, output = $5, error = $6,
+    runner_version = $7, effective_model = $8, artifact_name = $9, final_message = $10
 WHERE id = $1 AND status = 'running'`, item.ID, item.Status, completedAt,
-		item.DurationMS, item.Output, item.Error)
+		item.DurationMS, item.Output, item.Error, item.RunnerVersion, item.EffectiveModel, item.ArtifactName, item.FinalMessage)
 	if err != nil {
 		return err
 	}

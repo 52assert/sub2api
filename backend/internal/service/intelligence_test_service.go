@@ -17,6 +17,8 @@ const (
 	IntelligenceTestRetention     = 10
 	IntelligenceTestTimeout       = 15 * time.Minute
 	DefaultIntelligenceTestPrompt = "生成 html，内容是 svg 绘制鹈鹕骑自行车 2D 动画，不用进行测试"
+	IntelligenceTestRunnerHTTP    = "http"
+	IntelligenceTestRunnerCodex   = "codex_cli"
 )
 
 var (
@@ -41,6 +43,11 @@ type IntelligenceTest struct {
 	DurationMS      int64      `json:"duration_ms"`
 	Output          string     `json:"output,omitempty"`
 	Error           string     `json:"error,omitempty"`
+	Runner          string     `json:"runner"`
+	RunnerVersion   string     `json:"runner_version"`
+	EffectiveModel  string     `json:"effective_model"`
+	ArtifactName    string     `json:"artifact_name"`
+	FinalMessage    string     `json:"final_message"`
 }
 
 type IntelligenceTestRepository interface {
@@ -55,6 +62,20 @@ type IntelligenceTestRepository interface {
 type intelligenceTestGenerator interface {
 	RunIntelligenceTest(context.Context, int64, string, string, string) (string, error)
 	ValidateIntelligenceTest(*Account, string, string) error
+}
+
+// Optional detailed generation preserves the original HTTP generator contract.
+type intelligenceTestDetailedGenerator interface {
+	ValidateIntelligenceTestRunner(context.Context, *Account, string, string, string) error
+	RunIntelligenceTestDetailed(context.Context, int64, string, string, string, string) (IntelligenceTestGenerationResult, error)
+}
+
+type IntelligenceTestGenerationResult struct {
+	Output         string
+	RunnerVersion  string
+	EffectiveModel string
+	ArtifactName   string
+	FinalMessage   string
 }
 
 // IntelligenceTestService drains a durable queue independently of HTTP request lifetimes.
@@ -75,7 +96,14 @@ func NewIntelligenceTestService(repo IntelligenceTestRepository, accounts Accoun
 	return &IntelligenceTestService{repo: repo, accounts: accounts, generator: generator, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 2)}
 }
 
-func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, model, effort, prompt string) (*IntelligenceTest, error) {
+func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, model, effort, prompt string, runners ...string) (*IntelligenceTest, error) {
+	runner := IntelligenceTestRunnerHTTP
+	if len(runners) > 0 && strings.TrimSpace(runners[0]) != "" {
+		runner = strings.TrimSpace(runners[0])
+	}
+	if runner != IntelligenceTestRunnerHTTP && runner != IntelligenceTestRunnerCodex {
+		return nil, infraerrors.BadRequest("INVALID_TEST_RUNNER", "Select a valid test runner.")
+	}
 	model = strings.TrimSpace(model)
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	if effort == "" {
@@ -100,10 +128,19 @@ func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, m
 	if err != nil {
 		return nil, err
 	}
-	if err := s.generator.ValidateIntelligenceTest(account, model, effort); err != nil {
-		return nil, err
+	if detailed, ok := s.generator.(intelligenceTestDetailedGenerator); ok {
+		if err := detailed.ValidateIntelligenceTestRunner(ctx, account, model, effort, runner); err != nil {
+			return nil, err
+		}
+	} else {
+		if runner != IntelligenceTestRunnerHTTP {
+			return nil, infraerrors.BadRequest("CODEX_CLI_UNAVAILABLE", "Codex CLI runner is unavailable.")
+		}
+		if err := s.generator.ValidateIntelligenceTest(account, model, effort); err != nil {
+			return nil, err
+		}
 	}
-	record := &IntelligenceTest{AccountID: accountID, AccountName: account.Name, Platform: account.Platform, Model: model, ReasoningEffort: effort, Prompt: prompt, Status: "queued"}
+	record := &IntelligenceTest{AccountID: accountID, AccountName: account.Name, Platform: account.Platform, Model: model, ReasoningEffort: effort, Prompt: prompt, Status: "queued", Runner: runner}
 	if err := s.repo.Create(ctx, record); err != nil {
 		return nil, err
 	}
@@ -208,6 +245,7 @@ func (s *IntelligenceTestService) run(record *IntelligenceTest) {
 	if err != nil {
 		record.Status = "failed"
 		record.Output = ""
+		record.FinalMessage = ""
 		// Upstream errors can contain endpoints, credential fragments and provider account identity.
 		// Only bounded, fixed messages belong in the result shared with every user.
 		switch {
@@ -239,6 +277,16 @@ func (s *IntelligenceTestService) generate(ctx context.Context, record *Intellig
 			err = fmt.Errorf("generation panic: %v", recovered)
 		}
 	}()
+	if detailed, ok := s.generator.(intelligenceTestDetailedGenerator); ok {
+		result, generationErr := detailed.RunIntelligenceTestDetailed(ctx, record.AccountID, record.Model, record.Prompt, record.ReasoningEffort, record.Runner)
+		record.RunnerVersion = result.RunnerVersion
+		record.EffectiveModel = result.EffectiveModel
+		record.ArtifactName = result.ArtifactName
+		if generationErr == nil {
+			record.FinalMessage = result.FinalMessage
+		}
+		return result.Output, generationErr
+	}
 	return s.generator.RunIntelligenceTest(ctx, record.AccountID, record.Model, record.Prompt, record.ReasoningEffort)
 }
 

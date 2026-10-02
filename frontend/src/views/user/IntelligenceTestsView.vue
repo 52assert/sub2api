@@ -33,10 +33,14 @@
             </div>
             <p class="break-all text-xs text-gray-600 dark:text-gray-300">{{ t('intelligenceTests.account') }}: {{ accountName(record) }}</p>
             <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+              <span>{{ runnerLabel(record) }}</span>
+              <span v-if="record.runner_version">{{ t('intelligenceTests.runnerVersion') }}: {{ record.runner_version }}</span>
               <span>{{ record.platform }}</span>
               <span>{{ t(`intelligenceTests.efforts.${record.reasoning_effort || 'default'}`) }}</span>
               <span v-if="record.duration_ms > 0">{{ formatDuration(record.duration_ms) }}</span>
             </div>
+            <p v-if="record.effective_model && record.effective_model !== record.model" class="break-all text-xs text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.effectiveModel') }}: {{ record.effective_model }}</p>
+            <p v-if="record.artifact_name" class="break-all text-xs text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.artifactName') }}: {{ record.artifact_name }}</p>
             <p class="text-xs text-gray-500 dark:text-gray-400">{{ formatTime(record.created_at) }}</p>
           </button>
         </div>
@@ -54,6 +58,10 @@
               </div>
               <dl class="grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.account') }}</dt><dd class="mt-1 break-all text-gray-900 dark:text-gray-100" data-testid="intelligence-test-account">{{ accountName(selected) }}</dd></div>
+                <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.runner') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100" data-testid="intelligence-test-runner">{{ runnerLabel(selected) }}</dd></div>
+                <div v-if="selected.runner_version"><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.runnerVersion') }}</dt><dd class="mt-1 break-all text-gray-900 dark:text-gray-100">{{ selected.runner_version }}</dd></div>
+                <div v-if="selected.effective_model && selected.effective_model !== selected.model"><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.effectiveModel') }}</dt><dd class="mt-1 break-all text-gray-900 dark:text-gray-100">{{ selected.effective_model }}</dd></div>
+                <div v-if="selected.artifact_name"><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.artifactName') }}</dt><dd class="mt-1 break-all text-gray-900 dark:text-gray-100">{{ selected.artifact_name }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.platform') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ selected.platform }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.reasoningEffort') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ t(`intelligenceTests.efforts.${selected.reasoning_effort || 'default'}`) }}</dd></div>
                 <div><dt class="text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.duration') }}</dt><dd class="mt-1 text-gray-900 dark:text-gray-100">{{ selected.duration_ms > 0 ? formatDuration(selected.duration_ms) : '—' }}</dd></div>
@@ -64,6 +72,10 @@
               <details>
                 <summary class="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('intelligenceTests.prompt') }}</summary>
                 <p class="mt-2 whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-dark-900 dark:text-gray-300">{{ selected.prompt }}</p>
+              </details>
+              <details v-if="selected.final_message" data-testid="intelligence-test-final-message">
+                <summary class="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('intelligenceTests.finalMessage') }}</summary>
+                <p class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-dark-900 dark:text-gray-300">{{ selected.final_message }}</p>
               </details>
             </div>
             <div v-if="isIntelligenceTestActive(selected)" class="flex items-center gap-3 p-8 text-sm text-gray-500 dark:text-gray-400" data-testid="intelligence-test-active">
@@ -149,6 +161,10 @@ function formatDuration(milliseconds: number): string {
 
 function accountName(record: IntelligenceTestRecord): string {
   return record.account_name?.trim() || t('intelligenceTests.unknownAccount')
+}
+
+function runnerLabel(record: IntelligenceTestRecord): string {
+  return t(`intelligenceTests.runners.${record.runner === 'codex_cli' ? 'codex_cli' : 'http'}`)
 }
 
 function statusClass(status: IntelligenceTestStatus): string {
