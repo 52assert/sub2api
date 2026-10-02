@@ -24,10 +24,12 @@ var (
 	ErrIntelligenceTestNotFound  = infraerrors.NotFound("INTELLIGENCE_TEST_NOT_FOUND", "Test record not found.")
 )
 
-// IntelligenceTest stores a shared generation result without publishing account credentials or identity.
+// IntelligenceTest shares the account's display name at submission time without
+// publishing account identifiers or credentials.
 type IntelligenceTest struct {
 	ID              int64      `json:"id"`
 	AccountID       int64      `json:"-"`
+	AccountName     string     `json:"account_name"`
 	Platform        string     `json:"platform"`
 	Model           string     `json:"model"`
 	ReasoningEffort string     `json:"reasoning_effort"`
@@ -101,7 +103,7 @@ func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, m
 	if err := s.generator.ValidateIntelligenceTest(account, model, effort); err != nil {
 		return nil, err
 	}
-	record := &IntelligenceTest{AccountID: accountID, Platform: account.Platform, Model: model, ReasoningEffort: effort, Prompt: prompt, Status: "queued"}
+	record := &IntelligenceTest{AccountID: accountID, AccountName: account.Name, Platform: account.Platform, Model: model, ReasoningEffort: effort, Prompt: prompt, Status: "queued"}
 	if err := s.repo.Create(ctx, record); err != nil {
 		return nil, err
 	}

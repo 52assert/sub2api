@@ -68,6 +68,13 @@ describe('AccountActionMenu viewport positioning', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
+  it('does not offer artifact generation for TypeSafe embedding accounts', async () => {
+    const wrapper = await mountMenu()
+    await wrapper.setProps({ account: { ...account, platform: 'typesafe', type: 'apikey' } })
+    expect(getMenu().querySelector('[data-testid="account-intelligence-test-action"]')).toBeNull()
+    expect(getMenu().textContent).toContain('admin.accounts.testConnection')
+  })
+
   it('measures a long OAuth menu and opens above the last row', async () => {
     await mountMenu()
 

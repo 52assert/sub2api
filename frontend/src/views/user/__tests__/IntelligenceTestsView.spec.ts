@@ -11,7 +11,7 @@ vi.mock('@/composables/useClipboard', () => ({ useClipboard: () => ({ copyToClip
 vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, locale: ref('en') }) }))
 
 function record(overrides: Partial<IntelligenceTestRecord> = {}): IntelligenceTestRecord {
-  return { id: 1, platform: 'openai', model: 'gpt-test', reasoning_effort: 'high', prompt: 'Animate a cycling pelican', status: 'running', created_at: '2026-10-02T00:00:00Z', duration_ms: 0, ...overrides }
+  return { id: 1, account_name: 'Test account', platform: 'openai', model: 'gpt-test', reasoning_effort: 'high', prompt: 'Animate a cycling pelican', status: 'running', created_at: '2026-10-02T00:00:00Z', duration_ms: 0, ...overrides }
 }
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -53,7 +53,7 @@ describe('shared IntelligenceTestsView', () => {
     wrapper.unmount()
   })
 
-  it('selects the newly submitted task from the query without any administrator APIs or account details', async () => {
+  it('selects the newly submitted task from the query without any administrator APIs', async () => {
     query.test = '2'
     listIntelligenceTests.mockResolvedValue({ items: [record(), record({ id: 2 })], retention: 10 })
     getIntelligenceTest.mockResolvedValue(record({ id: 2 }))
@@ -62,6 +62,33 @@ describe('shared IntelligenceTestsView', () => {
     expect(getIntelligenceTest).toHaveBeenCalledWith(2, { signal: expect.any(AbortSignal) })
     expect(wrapper.get('[data-testid="intelligence-test-record-2"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).not.toContain('account_id')
+    wrapper.unmount()
+  })
+
+  it('shows the source account in each record and the selected result', async () => {
+    const first = record({ account_name: 'First upstream account' })
+    const second = record({ id: 2, account_name: 'Second upstream account' })
+    listIntelligenceTests.mockResolvedValue({ items: [first, second], retention: 10 })
+    getIntelligenceTest.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="intelligence-test-record-1"]').text()).toContain('First upstream account')
+    expect(wrapper.get('[data-testid="intelligence-test-record-2"]').text()).toContain('Second upstream account')
+    expect(wrapper.get('[data-testid="intelligence-test-account"]').text()).toBe('First upstream account')
+    await wrapper.get('[data-testid="intelligence-test-record-2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="intelligence-test-account"]').text()).toBe('Second upstream account')
+    wrapper.unmount()
+  })
+
+  it.each(['', '   ', undefined])('shows an unknown account fallback for unavailable historical names: %s', async (account_name) => {
+    const historical = record({ account_name })
+    listIntelligenceTests.mockResolvedValue({ items: [historical], retention: 10 })
+    getIntelligenceTest.mockResolvedValue(historical)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="intelligence-test-record-1"]').text()).toContain('intelligenceTests.unknownAccount')
+    expect(wrapper.get('[data-testid="intelligence-test-account"]').text()).toBe('intelligenceTests.unknownAccount')
     wrapper.unmount()
   })
 

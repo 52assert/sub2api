@@ -39,7 +39,7 @@ func (*intelligenceHandlerRepo) RecoverInterrupted(context.Context, time.Time) e
 type intelligenceHandlerAccounts struct{ service.AccountRepository }
 
 func (intelligenceHandlerAccounts) GetByID(context.Context, int64) (*service.Account, error) {
-	return &service.Account{ID: 42, Name: "private-account", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "private-secret"}}, nil
+	return &service.Account{ID: 42, Name: "测试来源账号", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "private-secret"}}, nil
 }
 
 func TestIntelligenceTestHandlerAcceptsBackgroundTaskAndSharesResults(t *testing.T) {
@@ -61,13 +61,15 @@ func TestIntelligenceTestHandlerAcceptsBackgroundTaskAndSharesResults(t *testing
 	require.Equal(t, http.StatusAccepted, response.Code)
 	require.Equal(t, "queued", repo.record.Status)
 	require.Equal(t, service.DefaultIntelligenceTestPrompt, repo.record.Prompt)
+	require.Equal(t, "测试来源账号", repo.record.AccountName)
+	require.Contains(t, response.Body.String(), `"account_name":"测试来源账号"`)
 	for _, path := range []string{"/intelligence-tests", "/intelligence-tests/1"} {
 		response = httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusOK, response.Code)
 		require.NotContains(t, response.Body.String(), "account_id")
 		require.NotContains(t, response.Body.String(), "private-secret")
-		require.NotContains(t, response.Body.String(), "private-account")
+		require.Contains(t, response.Body.String(), `"account_name":"测试来源账号"`)
 		var envelope struct {
 			Code int `json:"code"`
 		}

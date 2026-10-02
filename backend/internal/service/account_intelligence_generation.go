@@ -70,6 +70,9 @@ func (s *AccountTestService) ValidateIntelligenceTest(account *Account, model, e
 	if account.IsSyntheticUITest() {
 		return errors.New("模拟账号不支持降智测试")
 	}
+	if account.IsTypeSafe() {
+		return errors.New("TypeSafe 不支持生成 HTML / SVG，无法运行降智测试")
+	}
 	if (account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth) && !account.IsModelSupported(model) {
 		return errors.New("该账号不支持所选模型")
 	}
