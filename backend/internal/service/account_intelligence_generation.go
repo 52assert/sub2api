@@ -70,7 +70,7 @@ func (s *AccountTestService) ValidateIntelligenceTest(account *Account, model, e
 	if account.IsSyntheticUITest() {
 		return errors.New("模拟账号不支持降智测试")
 	}
-	if !(account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) && !account.IsModelSupported(model) {
+	if (account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth) && !account.IsModelSupported(model) {
 		return errors.New("该账号不支持所选模型")
 	}
 	mapped := account.GetMappedModel(model)
@@ -350,7 +350,7 @@ func (w *intelligenceCaptureWriter) Write(data []byte) (int, error) {
 			w.fail(errors.New("测试输出超过 2 MiB 限制"))
 			return 0, w.err
 		}
-		w.output.WriteString(event.Text)
+		_, _ = w.output.WriteString(event.Text)
 	case "error":
 		message := event.Error
 		if len(message) > 16<<10 {
@@ -705,7 +705,7 @@ func (s *AccountTestService) runAntigravityIntelligenceGeneration(c *gin.Context
 	if result == nil || result.resp == nil {
 		return s.sendErrorAndEnd(c, "upstream returned empty response")
 	}
-	defer result.resp.Body.Close()
+	defer func() { _ = result.resp.Body.Close() }()
 	if result.resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(result.resp.Body, 16<<10))
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", result.resp.StatusCode, body))
@@ -770,7 +770,7 @@ func (s *AccountTestService) runAntigravityUpstreamIntelligenceGeneration(c *gin
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, body))
