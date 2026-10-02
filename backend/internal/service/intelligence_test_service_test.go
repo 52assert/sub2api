@@ -182,6 +182,35 @@ func TestIntelligenceTestFailureDoesNotPublishUpstreamSecrets(t *testing.T) {
 	}
 }
 
+func TestIntelligenceTestPublishesOnlyFixedCLIFailureMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		hint  string
+	}{
+		{"classified", errors.New("Unsupported reasoning_effort: max is not supported; api_key=private-secret private-account@example.com"), "thinking level"},
+		{"unknown", errors.New("Unexpected fault api_key=private-secret private-account@example.com"), "Generation failed"},
+		{"deadline", context.DeadlineExceeded, "timed out after 15 minutes"},
+		{"canceled", context.Canceled, "server restart"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := intelligenceCLIFailure(tc.cause, "Bearer private-secret /tmp/private/auth.json https://private.example.com", []string{"private-secret"})
+			svc, repo := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{err: failure})
+			svc.run(&IntelligenceTest{ID: 1, Runner: IntelligenceTestRunnerCodex, FinalMessage: "private final summary"})
+			result := awaitIntelligenceResult(t, repo)
+			require.Equal(t, "failed", result.Status)
+			require.Contains(t, result.Error, tc.hint)
+			require.Empty(t, result.Output)
+			require.Empty(t, result.FinalMessage)
+			encoded, err := json.Marshal(result)
+			require.NoError(t, err)
+			for _, private := range []string{"private-secret", "private-account", "/tmp/private", "private.example.com", "private final summary"} {
+				require.NotContains(t, string(encoded), private)
+			}
+		})
+	}
+}
+
 func TestIntelligenceTestInputValidationAndDefaultPrompt(t *testing.T) {
 	svc, _ := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
 	record, err := svc.Create(context.Background(), 1, "gpt-test", "", " ")

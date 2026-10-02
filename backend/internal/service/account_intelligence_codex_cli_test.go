@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -154,6 +156,100 @@ func TestIntelligenceCodexCLIRejectsFailedOrIncompleteSuccessfulExit(t *testing.
 	}
 }
 
+func TestIntelligenceCodexCLIRecoversFromReconnectEvents(t *testing.T) {
+	account := &Account{ID: 14, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-api-key"}}
+	// Native Codex emits top-level errors while reconnecting, then reports its
+	// transport fallback as an item. A completed turn remains a successful test.
+	script := `printf '%s\n' '{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion)"}' '{"type":"error","message":"Reconnecting... 3/5 (stream disconnected before completion)"}' '{"type":"item.completed","item":{"type":"error","message":"Falling back from WebSockets to HTTPS transport"}}'
+` + intelligenceCLISuccessScript
+	svc, _ := intelligenceCLITestService(t, account, script)
+	result, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-6.1-sol", "animation", "max", IntelligenceTestRunnerCodex)
+	require.NoError(t, err)
+	require.Contains(t, result.Output, "<svg>")
+	require.Equal(t, "Created the animation.", result.FinalMessage)
+}
+
+func TestIntelligenceCodexCLIUsesTerminalFailureAfterReconnect(t *testing.T) {
+	for _, events := range []string{
+		`{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion)"}`,
+		`{"type":"error","message":"Temporary network error"}` + "\n" + `{"type":"turn.failed","error":{"message":"Account quota exceeded"}}`,
+		`{"type":"turn.completed"}` + "\n" + `{"type":"turn.failed","error":{"message":"Account quota exceeded"}}`,
+		`{"type":"turn.completed"}` + "\n" + `{"type":"turn.started"}` + "\n" + `{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion)"}`,
+	} {
+		_, err := intelligenceCLICompletedMessage(events)
+		var failure *intelligenceCLIError
+		require.ErrorAs(t, err, &failure)
+		if strings.Contains(events, "turn.failed") {
+			require.Equal(t, "Account quota exceeded", failure.reason)
+		} else {
+			require.Contains(t, failure.reason, "Reconnecting")
+		}
+	}
+}
+
+func TestIntelligenceCodexCLINonzeroExitKeepsSafeProviderDiagnostics(t *testing.T) {
+	account := &Account{ID: 14, Name: "Private provider identity", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "synthetic-api-key", "refresh_token": "private-refresh", "chatgpt_account_id": "private-chatgpt-id"}}
+	script := `printf '%s\n' '{"type":"turn.failed","error":{"message":"Unsupported value for this model","param":"reasoning_effort","code":"unsupported_value"}}'
+printf '%s\n' 'api_key=synthetic-api-key refresh_token=private-refresh account_id=private-chatgpt-id Private provider identity identity@example.invalid https://user:pass@proxy.private:8080/v1 /tmp/private/auth.json' "$CODEX_HOME/auth.json" >&2
+exit 1
+`
+	svc, fixture := intelligenceCLITestService(t, account, script)
+	_, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-6.1-sol", "animation", "max", IntelligenceTestRunnerCodex)
+	var failure *intelligenceCLIError
+	require.ErrorAs(t, err, &failure)
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	require.Contains(t, failure.publicMessage, "thinking level")
+	require.Contains(t, err.Error(), "exit status 1")
+	require.Contains(t, err.Error(), "reasoning_effort")
+	for _, private := range []string{"synthetic-api-key", "private-refresh", "private-chatgpt-id", account.Name, "identity@example.invalid", "proxy.private", "/tmp/private", fixture} {
+		require.NotContains(t, err.Error(), private)
+		require.NotContains(t, failure.publicMessage, private)
+	}
+}
+
+func TestIntelligenceCodexCLIFailureClassification(t *testing.T) {
+	for _, tc := range []struct{ reason, hint string }{
+		{"Invalid reasoning_effort: max is not supported", "thinking level"},
+		{"401 Unauthorized: token expired", "authentication"},
+		{"The model gpt-test does not exist", "model is unavailable"},
+		{"Account quota exceeded", "usage or rate limit"},
+		{"error sending request: connection refused", "proxy and network"},
+		{"codex CLI returned no output", "without returning any output"},
+		{"codex CLI generation did not complete", "before completion"},
+		{"codex CLI output exceeded its size limit", "size limit"},
+		{"codex CLI returned invalid JSON events", "invalid response events"},
+		{"Unexpected provider fault api_key=unknown-secret private@example.invalid", ""},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			err := intelligenceCLIFailure(errors.New(tc.reason), "", nil)
+			var failure *intelligenceCLIError
+			require.ErrorAs(t, err, &failure)
+			if tc.hint == "" {
+				require.Empty(t, failure.publicMessage)
+			} else {
+				require.Contains(t, failure.publicMessage, tc.hint)
+			}
+			require.NotContains(t, err.Error(), "unknown-secret")
+			require.NotContains(t, err.Error(), "private@example.invalid")
+		})
+	}
+}
+
+func TestIntelligenceCodexCLIDiagnosticsSanitizeBeforeTakingBoundedTail(t *testing.T) {
+	secret := strings.Repeat("private-credential", 200)
+	token := intelligenceCLITestToken("private-oauth-identity")
+	redactions := intelligenceCLIRedactions(nil, nil, secret, token, "https://user:pass@proxy.private:8080")
+	stderr := strings.Repeat("startup warning ", 1000) + secret + " Bearer " + token + " private-oauth-identity test-user https://user:pass@proxy.private:8080 /tmp/private/auth.json " + strings.Repeat("last warning ", 100)
+	err := intelligenceCLIFailure(errors.New("CLI exited"), stderr, redactions)
+	require.LessOrEqual(t, len(err.Error()), intelligenceCLIDetailLimit+len("codex CLI failed: "))
+	for _, private := range []string{secret, "private-credential", token, "private-oauth-identity", "test-user", "proxy.private", "/tmp/private"} {
+		require.NotContains(t, err.Error(), private)
+	}
+	require.Contains(t, err.Error(), "last warning")
+}
+
 func TestIntelligenceCodexCLICanKeepSVGInFinalMessage(t *testing.T) {
 	account := &Account{ID: 21, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key"}}
 	script := `printf '<svg xmlns="http://www.w3.org/2000/svg"/>' > "$final"
@@ -164,6 +260,38 @@ printf '%s\n' '{"type":"turn.completed"}'
 	require.NoError(t, err)
 	require.Equal(t, result.FinalMessage, result.Output)
 	require.Empty(t, result.ArtifactName)
+}
+
+func TestIntelligenceCodexCLICanKeepTextAndMarkdownWithoutArtifacts(t *testing.T) {
+	for _, answer := range []string{"答案是 42。", "**答案：42**\n\n计算如下。"} {
+		for _, fromFile := range []bool{true, false} {
+			t.Run(fmt.Sprintf("file=%t/%s", fromFile, answer), func(t *testing.T) {
+				account := &Account{ID: 21, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key"}}
+				event, err := json.Marshal(map[string]any{"type": "item.completed", "item": map[string]string{"type": "agent_message", "text": answer}})
+				require.NoError(t, err)
+				script := "printf '%s\\n' '" + string(event) + "' '{\"type\":\"turn.completed\"}'\n"
+				if fromFile {
+					script += "printf '%s' '" + answer + "' > \"$final\"\n"
+				}
+				svc, _ := intelligenceCLITestService(t, account, script)
+				result, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-6.1-sol", "求解数学题，不调用工具，只回答结果。", "max", IntelligenceTestRunnerCodex)
+				require.NoError(t, err)
+				require.Equal(t, answer, result.Output)
+				require.Equal(t, answer, result.FinalMessage)
+				require.Empty(t, result.ArtifactName)
+			})
+		}
+	}
+}
+
+func TestIntelligenceCodexCLIRejectsCompletedTurnWithoutOutput(t *testing.T) {
+	account := &Account{ID: 21, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key"}}
+	svc, _ := intelligenceCLITestService(t, account, "printf '  ' > \"$final\"\nprintf '%s\\n' '{\"type\":\"turn.completed\"}'\n")
+	result, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-6.1-sol", "answer the question", "max", IntelligenceTestRunnerCodex)
+	var failure *intelligenceCLIError
+	require.ErrorAs(t, err, &failure)
+	require.Contains(t, failure.publicMessage, "without returning any output")
+	require.Empty(t, result.Output)
 }
 
 func TestIntelligenceCodexCLIVersionIgnoresStartupWarnings(t *testing.T) {

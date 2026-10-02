@@ -1,7 +1,7 @@
 export default {
   intelligenceTests: {
     title: '降智测试',
-    description: '查看模型生成的作品与测试记录',
+    description: '查看模型回答、生成的作品与测试记录',
     model: '模型',
     selectModel: '选择模型',
     runner: '执行方式',

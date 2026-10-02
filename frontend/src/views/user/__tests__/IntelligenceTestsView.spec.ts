@@ -169,6 +169,22 @@ describe('shared IntelligenceTestsView', () => {
     wrapper.unmount()
   })
 
+  it('displays a CLI reasoning answer without artifact controls or a duplicate final message', async () => {
+    const answer = '至少取出 29 颗糖果。\n最坏情况下可取出 28 颗而不满足条件。'
+    const finished = record({ status: 'succeeded', runner: 'codex_cli', prompt: '直接回答糖果推理题，不调用工具。', output: answer, final_message: answer })
+    listIntelligenceTests.mockResolvedValue({ items: [finished], retention: 10 })
+    getIntelligenceTest.mockResolvedValue(finished)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="intelligence-test-source"]').text()).toBe(answer)
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="intelligence-test-source-tab"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="intelligence-test-final-message"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('intelligenceTests.noPreview')
+    expect(wrapper.text()).not.toContain('intelligenceTests.failed')
+    wrapper.unmount()
+  })
+
   it('shows failed tasks and allows retrying a failed list request', async () => {
     listIntelligenceTests.mockRejectedValueOnce(new Error('Network unavailable'))
     const wrapper = mountView()

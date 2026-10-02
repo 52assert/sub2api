@@ -73,7 +73,7 @@
                 <summary class="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('intelligenceTests.prompt') }}</summary>
                 <p class="mt-2 whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-dark-900 dark:text-gray-300">{{ selected.prompt }}</p>
               </details>
-              <details v-if="selected.final_message" data-testid="intelligence-test-final-message">
+              <details v-if="selected.final_message && selected.final_message !== selected.output" data-testid="intelligence-test-final-message">
                 <summary class="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('intelligenceTests.finalMessage') }}</summary>
                 <p class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-dark-900 dark:text-gray-300">{{ selected.final_message }}</p>
               </details>
@@ -88,13 +88,13 @@
             </div>
             <div v-if="selected.output" class="space-y-4 p-5">
               <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="flex gap-2" role="group" :aria-label="t('intelligenceTests.result')">
-                  <button class="btn btn-sm" :class="tab === 'preview' ? 'btn-primary' : 'btn-secondary'" :disabled="!preview" :aria-pressed="tab === 'preview'" @click="tab = 'preview'">{{ t('intelligenceTests.preview') }}</button>
+                <div v-if="preview" class="flex gap-2" role="group" :aria-label="t('intelligenceTests.result')">
+                  <button class="btn btn-sm" :class="tab === 'preview' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="tab === 'preview'" @click="tab = 'preview'">{{ t('intelligenceTests.preview') }}</button>
                   <button class="btn btn-sm" :class="tab === 'source' ? 'btn-primary' : 'btn-secondary'" :aria-pressed="tab === 'source'" data-testid="intelligence-test-source-tab" @click="tab = 'source'">{{ t('intelligenceTests.source') }}</button>
                 </div>
+                <h3 v-else class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t('intelligenceTests.result') }}</h3>
                 <button class="btn btn-secondary btn-sm" @click="copyOutput">{{ t('intelligenceTests.copyOutput') }}</button>
               </div>
-              <p v-if="!preview" class="text-sm text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.noPreview') }}</p>
               <iframe
                 v-if="tab === 'preview' && preview"
                 :key="selected.id"
@@ -105,7 +105,8 @@
                 class="h-[65vh] min-h-[400px] w-full rounded-xl border border-gray-200 bg-white dark:border-dark-600"
                 data-testid="intelligence-test-preview"
               />
-              <pre v-else class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-950 p-4 text-xs text-gray-100" data-testid="intelligence-test-source"><code>{{ selected.output }}</code></pre>
+              <pre v-else-if="preview" class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-950 p-4 text-xs text-gray-100" data-testid="intelligence-test-source"><code>{{ selected.output }}</code></pre>
+              <p v-else class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-gray-50 p-4 text-sm leading-relaxed text-gray-900 dark:bg-dark-900 dark:text-gray-100" data-testid="intelligence-test-source">{{ selected.output }}</p>
             </div>
             <p v-else-if="selected.status === 'succeeded'" class="p-5 text-sm text-gray-500">{{ t('intelligenceTests.noOutput') }}</p>
           </template>

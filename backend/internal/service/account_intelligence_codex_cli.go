@@ -25,6 +25,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/google/uuid"
 )
 
@@ -32,11 +33,17 @@ const (
 	intelligenceCLIStdoutLimit = 8 << 20
 	intelligenceCLIStderrLimit = 64 << 10
 	intelligenceCLIFileLimit   = 128
+	intelligenceCLIDetailLimit = 4096
+	intelligenceCLIStderrTail  = 2048
 )
 
 var (
 	intelligenceCLIVersionPattern = regexp.MustCompile(`^codex-cli (\d+)\.(\d+)\.(\d+)(?:[\w.+-]*)$`)
-	intelligenceCLISVGPattern     = regexp.MustCompile(`(?is)<svg\b(?:[^>]*?/>|[^>]*>.*?</svg>)`)
+	intelligenceCLIBearerPattern  = regexp.MustCompile(`(?i)\bBearer\s+[^\s,"'<>]+`)
+	intelligenceCLITokenPattern   = regexp.MustCompile(`\b(?:eyJ[\w-]+\.[\w-]+\.[\w-]+|sk-[\w-]+)\b`)
+	intelligenceCLIEmailPattern   = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
+	intelligenceCLIURLPattern     = regexp.MustCompile(`(?i)\b(?:https?|socks[45]?)://[^\s"'<>]+`)
+	intelligenceCLIPathPattern    = regexp.MustCompile(`(?:[A-Za-z]:[\\/]|/)[A-Za-z0-9_.-][^\s"'<>]*`)
 )
 
 func (s *AccountTestService) ValidateIntelligenceTestRunner(ctx context.Context, account *Account, model, effort, runner string) error {
@@ -286,34 +293,41 @@ func (s *AccountTestService) runCodexCLIIntelligenceTest(ctx context.Context, ac
 		return result, ctx.Err()
 	}
 	if stdout.Exceeded() || stderr.Exceeded() {
-		return result, errors.New("codex CLI output exceeded its size limit")
+		return result, intelligenceCLIFailure(errors.New("codex CLI output exceeded its size limit"), "", nil)
 	}
+	// CLI failures often have a nonzero exit code. Parse their JSON events before
+	// returning so the provider's actual failure is not reduced to "exit status 1".
+	message, eventErr := intelligenceCLICompletedMessage(stdout.String())
+	redactions := intelligenceCLIRedactions(account, credential, token, proxyURL, taskDir, s.intelligenceCLIPath(), s.intelligenceCLISandboxPath())
 	if runErr != nil {
-		return result, fmt.Errorf("codex CLI execution failed: %w", runErr)
+		failure := &intelligenceCLIError{cause: fmt.Errorf("codex CLI execution failed: %w", runErr)}
+		var eventFailure *intelligenceCLIError
+		if errors.As(eventErr, &eventFailure) {
+			failure.reason = eventFailure.reason
+		} else if eventErr != nil && stdout.String() != "" {
+			failure.cause = fmt.Errorf("codex CLI execution failed (%s): %w", eventErr, runErr)
+		}
+		return result, intelligenceCLIFailure(failure, stderr.String(), redactions)
 	}
-	message, err := intelligenceCLICompletedMessage(stdout.String())
-	if err != nil {
-		return result, err
+	if eventErr != nil {
+		return result, intelligenceCLIFailure(eventErr, stderr.String(), redactions)
 	}
 	if final, readErr := intelligenceCLIReadFile(taskDir, "final-message.txt"); readErr == nil {
 		message = string(final)
 	} else if !errors.Is(readErr, fs.ErrNotExist) {
-		return result, readErr
+		return result, intelligenceCLIFailure(readErr, "", redactions)
 	}
 	if len(message) > intelligenceMaxOutputBytes {
-		return result, errors.New("codex CLI final message exceeded its size limit")
+		return result, intelligenceCLIFailure(errors.New("codex CLI final message exceeded its size limit"), "", redactions)
 	}
 	result.FinalMessage = strings.TrimSpace(message)
 	result.Output, result.ArtifactName, err = intelligenceCLIArtifact(workspace)
 	if err != nil {
-		return result, err
+		return result, intelligenceCLIFailure(err, "", redactions, "final message: "+result.FinalMessage)
 	}
 	if result.Output == "" {
-		lower := strings.ToLower(result.FinalMessage)
-		hasHTML := strings.Contains(lower, "<html") && strings.Contains(lower, "</html>")
-		hasSVG := intelligenceCLISVGPattern.MatchString(result.FinalMessage)
-		if !hasHTML && !hasSVG {
-			return result, errors.New("codex CLI did not produce HTML or SVG")
+		if result.FinalMessage == "" {
+			return result, intelligenceCLIFailure(errors.New("codex CLI returned no output"), "", redactions)
 		}
 		result.Output = result.FinalMessage
 	}
@@ -437,15 +451,173 @@ func (b *intelligenceCLIBoundedBuffer) Exceeded() bool {
 	return b.exceeded
 }
 
+// A CLI error keeps private diagnostics separate from the fixed message shared
+// with every signed-in user. reason is raw event data until the runner sanitizes
+// it with the selected account's credentials; Error never includes raw reason.
+type intelligenceCLIError struct {
+	cause         error
+	reason        string
+	diagnostic    string
+	publicMessage string
+}
+
+func (e *intelligenceCLIError) Error() string {
+	if e.diagnostic != "" {
+		return "codex CLI failed: " + e.diagnostic
+	}
+	return e.cause.Error()
+}
+
+func (e *intelligenceCLIError) Unwrap() error { return e.cause }
+
+func intelligenceCLIFailure(cause error, stderr string, redactions []string, details ...string) error {
+	reason := ""
+	var eventFailure *intelligenceCLIError
+	if errors.As(cause, &eventFailure) {
+		reason = eventFailure.reason
+	}
+	reason = intelligenceCLISanitizeDiagnostic(reason, redactions)
+	stderr = intelligenceCLISanitizeDiagnostic(stderr, redactions)
+	// Sanitize before taking the tail so a truncated credential cannot escape an
+	// exact-value redaction. stdout/stderr are already bounded during collection.
+	if len(stderr) > intelligenceCLIStderrTail {
+		stderr = stderr[len(stderr)-intelligenceCLIStderrTail:]
+		for !utf8.ValidString(stderr) {
+			stderr = stderr[1:]
+		}
+	}
+	diagnostic := intelligenceCLISanitizeDiagnostic(cause.Error(), redactions)
+	classification := reason
+	if reason != "" {
+		diagnostic += "; " + reason
+	} else {
+		classification = diagnostic + " " + stderr
+	}
+	if stderr != "" {
+		diagnostic += "; stderr: " + stderr
+	}
+	for _, detail := range details {
+		diagnostic += "; " + intelligenceCLISanitizeDiagnostic(detail, redactions)
+	}
+	if len(diagnostic) > intelligenceCLIDetailLimit {
+		diagnostic = diagnostic[:intelligenceCLIDetailLimit]
+		for !utf8.ValidString(diagnostic) {
+			diagnostic = diagnostic[:len(diagnostic)-1]
+		}
+	}
+	return &intelligenceCLIError{cause: cause, diagnostic: diagnostic, publicMessage: intelligenceCLIPublicFailure(classification)}
+}
+
+func intelligenceCLIPublicFailure(reason string) string {
+	lower := strings.ToLower(reason)
+	contains := func(parts ...string) bool {
+		for _, part := range parts {
+			if strings.Contains(lower, part) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case contains("reasoning_effort", "reasoning effort", "thinking level") && contains("unsupported", "not supported", "invalid", "supported values"):
+		return "The selected thinking level is not supported by this model. Choose another level and retry."
+	case contains("unauthorized", "authentication", "invalid api key", "incorrect api key", "invalid_api_key", "invalid credentials", "token expired", "expired token", "401 unauthorized", "403 forbidden"):
+		return "Account authentication failed. Refresh the account credentials and retry."
+	case contains("rate limit", "rate_limit", "usage limit", "quota", "insufficient credits", "credit balance", "too many requests"):
+		return "The account reached its usage or rate limit. Wait or choose another account and retry."
+	case contains("model") && contains("not found", "not_found", "does not exist", "unavailable", "not available", "unsupported", "not supported", "no access", "not have access"):
+		return "The selected model is unavailable for this account. Choose another model and retry."
+	case contains("connection", "connect error", "network", "dns", "timed out", "timeout", "stream disconnected", "error sending request", "tls", "certificate"):
+		return "Codex CLI could not connect to the upstream service. Check the account proxy and network, then retry."
+	case contains("returned no output", "generated an empty artifact"):
+		return "Codex CLI completed without returning any output. Please retry."
+	case contains("generation did not complete", "response incomplete", "stream ended"):
+		return "Codex CLI generation ended before completion. Please retry."
+	case contains("exceeded its size limit", "generated too many files"):
+		return "Codex CLI output exceeded the test size limit. Request a smaller artifact and retry."
+	case contains("invalid json events"):
+		return "Codex CLI returned invalid response events. Please retry."
+	default:
+		return ""
+	}
+}
+
+func intelligenceCLIRedactions(account, credential *Account, values ...string) []string {
+	redactions := append([]string(nil), values...)
+	var collect func(any, bool, int)
+	collect = func(value any, sensitive bool, depth int) {
+		if depth > 8 {
+			return
+		}
+		switch value := value.(type) {
+		case string:
+			if sensitive && value != "" {
+				redactions = append(redactions, value, strings.Trim(strconv.Quote(value), `"`))
+			}
+		case map[string]any:
+			for key, child := range value {
+				key = strings.ToLower(key)
+				private := sensitive || strings.Contains(key, "token") || strings.Contains(key, "key") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "email") || strings.Contains(key, "account") || strings.Contains(key, "user") || key == "sub" || key == "client_id"
+				collect(child, private, depth+1)
+			}
+		case []any:
+			for _, child := range value {
+				collect(child, sensitive, depth+1)
+			}
+		}
+	}
+	for _, item := range []*Account{account, credential} {
+		if item != nil {
+			if item.Name != "" {
+				redactions = append(redactions, item.Name)
+			}
+			collect(item.Credentials, false, 0)
+		}
+	}
+	// Native OAuth diagnostics can mention the identity embedded in the access
+	// token even when it is not stored as a separate credential field.
+	for _, value := range values {
+		parts := strings.Split(value, ".")
+		if len(parts) == 3 {
+			if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+				var claims map[string]any
+				if json.Unmarshal(payload, &claims) == nil {
+					collect(claims, false, 0)
+				}
+			}
+		}
+	}
+	sort.Slice(redactions, func(i, j int) bool { return len(redactions[i]) > len(redactions[j]) })
+	return redactions
+}
+
+func intelligenceCLISanitizeDiagnostic(value string, redactions []string) string {
+	for _, private := range redactions {
+		if private != "" {
+			value = strings.ReplaceAll(value, private, "[redacted]")
+		}
+	}
+	value = intelligenceCLIBearerPattern.ReplaceAllString(value, "Bearer [redacted]")
+	value = intelligenceCLITokenPattern.ReplaceAllString(value, "[redacted token]")
+	value = logredact.RedactText(value, "api_key", "authorization", "token", "account_id", "chatgpt_account_id", "user_id", "client_id", "email", "proxy_password")
+	value = intelligenceCLIEmailPattern.ReplaceAllString(value, "[redacted email]")
+	value = intelligenceCLIURLPattern.ReplaceAllString(value, "[redacted URL]")
+	value = intelligenceCLIPathPattern.ReplaceAllString(value, "[redacted path]")
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func intelligenceCLICompletedMessage(output string) (string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	scanner.Buffer(make([]byte, 64<<10), intelligenceCLIStdoutLimit)
 	complete := false
 	message := ""
+	var failure *intelligenceCLIError
 	for scanner.Scan() {
 		var event struct {
-			Type string `json:"type"`
-			Item struct {
+			Type    string          `json:"type"`
+			Message string          `json:"message"`
+			Error   json.RawMessage `json:"error"`
+			Item    struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"item"`
@@ -454,17 +626,53 @@ func intelligenceCLICompletedMessage(output string) (string, error) {
 			return "", errors.New("codex CLI returned invalid JSON events")
 		}
 		switch event.Type {
+		case "turn.started":
+			complete = false
+			message = ""
+			failure = nil
 		case "turn.completed":
 			complete = true
+			failure = nil
 		case "turn.failed", "error":
-			return "", errors.New("codex CLI generation failed")
+			reason := event.Message
+			if len(event.Error) > 0 {
+				var detail struct {
+					Message string `json:"message"`
+					Param   string `json:"param"`
+					Code    string `json:"code"`
+				}
+				if json.Unmarshal(event.Error, &detail) == nil && detail.Message != "" {
+					reason = detail.Message
+					if detail.Param != "" {
+						reason += "; parameter: " + detail.Param
+					}
+					if detail.Code != "" {
+						reason += "; error type: " + detail.Code
+					}
+				} else {
+					var message string
+					if json.Unmarshal(event.Error, &message) == nil {
+						reason = message
+					}
+				}
+			}
+			failure = &intelligenceCLIError{cause: errors.New("codex CLI generation failed"), reason: reason}
+			if event.Type == "turn.failed" {
+				return "", failure
+			}
 		case "item.completed":
 			if event.Item.Type == "agent_message" {
 				message = event.Item.Text
 			}
 		}
 	}
-	if scanner.Err() != nil || !complete {
+	if scanner.Err() != nil {
+		return "", errors.New("codex CLI generation did not complete")
+	}
+	if !complete {
+		if failure != nil {
+			return "", failure
+		}
 		return "", errors.New("codex CLI generation did not complete")
 	}
 	return message, nil

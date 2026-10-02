@@ -111,7 +111,7 @@ pnpm --dir frontend run build
 
 每次任务拥有独立临时目录和登录文件，结束或超时后清理，并终止工具子进程。`codex-test-sandbox` 对整个 CLI 和子进程施加 Landlock 文件访问限制，允许读取运行所需系统文件、只在本次任务目录内写入文件内容；应用数据目录和其他任务不在读取范围。CLI 使用外部沙箱模式，不额外启动 bubblewrap。容器无需增加特权或关闭默认 seccomp；宿主内核须支持 **Landlock ABI ≥ 2**。ABI 2 额外安装系统调用过滤器，补齐文件截断保护；无法施加限制时创建测试会直接报错，保留 HTTP 选项。
 
-管理员发起后台任务，普通登录用户在「我的账户 → 降智测试」查看同一份结果。最多两个任务同时执行，单次限时 15 分钟，保留最近 10 次完成记录。记录展示所用账号名称、执行方式、CLI 版本、实际模型、时间和产物文件；收集任务中的 HTML/SVG 文件并以隔离 iframe 预览，同时保留 CLI 最终回复。旧记录标记为 HTTP。
+管理员发起后台任务，普通登录用户在「我的账户 → 降智测试」查看同一份结果。最多两个任务同时执行，单次限时 15 分钟，保留最近 10 次完成记录。记录展示所用账号名称、执行方式、CLI 版本、实际模型、时间和产物文件；收集任务中的 HTML/SVG 文件并以隔离 iframe 预览，同时保留 CLI 最终回复。自定义推理题等文字测试无需生成文件，CLI 完整结束后直接展示非空最终回答。临时重连提示不会将最终成功的任务误判为失败，真正失败时显示固定错误类别并在服务端保留脱敏诊断。旧记录标记为 HTTP。
 
 使用本仓库定制镜像无需自行安装 CLI。二进制部署需额外编译 `backend/cmd/codex-test-sandbox` 并安装 Codex 的 `codex-execve-wrapper`、`apply_patch` 等辅助别名；可通过 `INTELLIGENCE_TEST_CLI_PATH`、`INTELLIGENCE_TEST_SANDBOX_PATH` 配置同机绝对路径，默认分别为 `/usr/local/bin/codex`、`/usr/local/bin/codex-test-sandbox`。安装后可检查：
 

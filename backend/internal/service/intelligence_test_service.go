@@ -247,12 +247,16 @@ func (s *IntelligenceTestService) run(record *IntelligenceTest) {
 		record.Output = ""
 		record.FinalMessage = ""
 		// Upstream errors can contain endpoints, credential fragments and provider account identity.
-		// Only bounded, fixed messages belong in the result shared with every user.
+		// Only fixed messages belong in the result shared with every user. CLI
+		// diagnostics remain private while their classified cause is actionable.
+		var cliFailure *intelligenceCLIError
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
 			record.Error = "Test timed out after 15 minutes."
 		case errors.Is(err, context.Canceled):
 			record.Error = "Test interrupted by a server restart. Please run it again."
+		case errors.As(err, &cliFailure) && cliFailure.publicMessage != "":
+			record.Error = cliFailure.publicMessage
 		default:
 			record.Error = "Generation failed. Check the account, model and thinking level, then try again."
 		}
