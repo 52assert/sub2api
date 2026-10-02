@@ -5,6 +5,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -352,7 +353,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.True(t, strings.HasSuffix(etag, `"`))
 	})
 
-	t.Run("returns_304_for_matching_etag", func(t *testing.T) {
+	t.Run("returns_fresh_html_when_etag_matches", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
 		}
@@ -360,10 +361,14 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		server, err := NewFrontendServer(provider)
 		require.NoError(t, err)
 
-		// Use a real router for proper 304 handling
+		// Use a real router and emit a fresh nonce per request like SecurityHeaders.
 		router := gin.New()
+		requestCount := 0
 		router.Use(func(c *gin.Context) {
-			c.Set(middleware.CSPNonceKey, "test-nonce")
+			requestCount++
+			nonce := fmt.Sprintf("test-nonce-%d", requestCount)
+			c.Set(middleware.CSPNonceKey, nonce)
+			c.Header("Content-Security-Policy", "script-src 'nonce-"+nonce+"'")
 			c.Next()
 		})
 		router.Use(server.Middleware())
@@ -374,15 +379,19 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		router.ServeHTTP(w1, req1)
 		etag := w1.Header().Get("ETag")
 		require.NotEmpty(t, etag)
+		assert.Contains(t, w1.Body.String(), `nonce="test-nonce-1"`)
 
-		// Second request with If-None-Match
+		// A conditional request must still receive a body whose nonce matches
+		// the response CSP header: a 304 would pair the new header with the
+		// old cached body and block its inline scripts.
 		w2 := httptest.NewRecorder()
 		req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 		req2.Header.Set("If-None-Match", etag)
 		router.ServeHTTP(w2, req2)
 
-		assert.Equal(t, http.StatusNotModified, w2.Code)
-		assert.Empty(t, w2.Body.String())
+		require.Equal(t, http.StatusOK, w2.Code)
+		assert.Contains(t, w2.Header().Get("Content-Security-Policy"), "'nonce-test-nonce-2'")
+		assert.Contains(t, w2.Body.String(), `nonce="test-nonce-2"`)
 	})
 
 	t.Run("sets_cache_control_header", func(t *testing.T) {
