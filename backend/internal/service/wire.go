@@ -254,6 +254,12 @@ func ProvideAccountUsageService(
 	return service
 }
 
+func ProvideIntelligenceTestService(repo IntelligenceTestRepository, accounts AccountRepository, generator *AccountTestService) *IntelligenceTestService {
+	svc := NewIntelligenceTestService(repo, accounts, generator)
+	svc.Start()
+	return svc
+}
+
 func ProvideAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
@@ -851,6 +857,7 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	ProvideIntelligenceTestService,
 	ProvideCustomCodexResetService,
 	// Core services
 	ProvideAuthService,

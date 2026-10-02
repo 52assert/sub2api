@@ -8,6 +8,7 @@ type NavigationGuard = (
 
 const routerHarness = vi.hoisted(() => ({
   guard: null as NavigationGuard | null,
+  routes: [] as Array<{ path: string; meta?: Record<string, unknown> }>,
 }))
 
 const authStore = vi.hoisted(() => ({
@@ -33,13 +34,16 @@ const appStore = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   createWebHistory: vi.fn(() => ({})),
-  createRouter: vi.fn(() => ({
-    beforeEach: vi.fn((guard: NavigationGuard) => {
-      routerHarness.guard = guard
-    }),
-    afterEach: vi.fn(),
-    onError: vi.fn(),
-  })),
+  createRouter: vi.fn((options) => {
+    routerHarness.routes = options.routes
+    return {
+      beforeEach: vi.fn((guard: NavigationGuard) => {
+        routerHarness.guard = guard
+      }),
+      afterEach: vi.fn(),
+      onError: vi.fn(),
+    }
+  }),
 }))
 
 vi.mock('@/stores/auth', () => ({
@@ -118,6 +122,23 @@ describe('feature route guard', () => {
     appStore.publicSettingsLoaded = false
     appStore.cachedPublicSettings = null
     appStore.fetchPublicSettings.mockReset()
+  })
+
+  it('allows every signed-in user to view intelligence test results, including in simple mode', async () => {
+    const route = routerHarness.routes.find((entry) => entry.path === '/intelligence-tests')!
+    expect(route.meta).toMatchObject({ requiresAuth: true, requiresAdmin: false })
+    authStore.isSimpleMode = true
+    const { navigation, next } = runGuard(route.meta!, route.path)
+    await navigation
+    expect(next).toHaveBeenCalledWith()
+  })
+
+  it('requires sign-in for shared intelligence test results', async () => {
+    const route = routerHarness.routes.find((entry) => entry.path === '/intelligence-tests')!
+    authStore.isAuthenticated = false
+    const { navigation, next } = runGuard(route.meta!, route.path)
+    await navigation
+    expect(next).toHaveBeenCalledWith({ path: '/login', query: { redirect: '/intelligence-tests' } })
   })
 
   it('waits for the first public-settings request before deciding payment access', async () => {
