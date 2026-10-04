@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -16,6 +17,33 @@ import (
 )
 
 var errCustomResetHistoryMissing = errors.New("missing subscription history at compensation boundary")
+
+// ErrScheduledSubscriptionCacheRefresh means the reset committed successfully.
+// Callers must report the warning without repeating the financial mutation.
+var ErrScheduledSubscriptionCacheRefresh = errors.New("scheduled subscription reset committed but cache refresh failed")
+
+type customScheduledResetScope struct {
+	groups   []int64
+	identity string
+}
+
+func customScheduledResetGroups(ctx context.Context, tx *sql.Tx, accountID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT ag.group_id FROM account_groups ag JOIN groups g ON g.id=ag.group_id
+ WHERE ag.account_id=$1 AND g.deleted_at IS NULL ORDER BY ag.group_id FOR SHARE OF ag,g`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	groups := []int64{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		groups = append(groups, id)
+	}
+	return groups, rows.Err()
+}
 
 // These fork-owned tables deliberately keep event deduplication and financial
 // mutations in the same PostgreSQL transaction. Redis is not the source of truth.
@@ -169,6 +197,10 @@ func beginCustomResetCard(ctx context.Context, db *sql.DB, id int64) (func(), er
 // all later charges, including consumption during polling and verification.
 // Each window is protected separately when another reset already changed it.
 func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation, event, fingerprint string, actor int64) (int, error) {
+	return s.applyWithSchedule(ctx, id, operation, event, fingerprint, actor, nil)
+}
+
+func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int64, operation, event, fingerprint string, actor int64, schedule *customScheduledResetScope) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -188,11 +220,42 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(credentials->>'chatgpt_account_id','') FROM accounts WHERE id=$1 AND deleted_at IS NULL AND platform='openai' AND type='oauth' FOR UPDATE`, id).Scan(&upstreamAccountID); err != nil {
 		return 0, err
 	}
+	if schedule != nil {
+		var claimed string
+		err = tx.QueryRowContext(ctx, `INSERT INTO custom_account_subscription_reset_receipts(operation_id,account_id)
+ VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING operation_id`, operation, id).Scan(&claimed)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	// Removing a binding does not require the account row lock. Lock the
+	// bindings as well so scope checks remain valid until commit.
+	groups, err := customScheduledResetGroups(ctx, tx, id)
+	if err != nil {
+		return 0, err
+	}
+	if schedule != nil {
+		currentIdentity := customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": upstreamAccountID}})
+		if schedule.identity == "" || currentIdentity != schedule.identity {
+			return 0, infraerrors.Conflict("ACCOUNT_SCHEDULE_IDENTITY_CHANGED", "Account identity changed; save the schedule again")
+		}
+		if len(groups) != len(schedule.groups) {
+			return 0, infraerrors.Conflict("ACCOUNT_SCHEDULE_GROUPS_CHANGED", "Account groups changed; save the schedule again")
+		}
+		for i, group := range groups {
+			if schedule.groups[i] != group {
+				return 0, infraerrors.Conflict("ACCOUNT_SCHEDULE_GROUPS_CHANGED", "Account groups changed; save the schedule again")
+			}
+		}
+	}
 	subs, err := customResetSubscriptions(ctx, tx, id, true)
 	if err != nil {
 		return 0, err
 	}
-	if event == "" && customResetFingerprint(subs) != fingerprint {
+	if event == "" && schedule == nil && customResetFingerprint(subs) != fingerprint {
 		return 0, infraerrors.Conflict("CODEX_RESET_TARGETS_CHANGED", "Subscriptions changed; refresh the preview")
 	}
 	if event != "" {
@@ -214,6 +277,8 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 	source := "manual"
 	if event != "" {
 		source = "official"
+	} else if schedule != nil {
+		source = "scheduled"
 	}
 	changed := []CustomResetSubscription{}
 	for _, v := range subs {
@@ -298,13 +363,25 @@ func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation
 		}
 		changed = append(changed, v)
 	}
+	if schedule != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE custom_account_subscription_reset_receipts SET reset_count=$2 WHERE operation_id=$1`, operation, len(changed)); err != nil {
+			return 0, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
+	var cacheWarning error
 	for _, v := range subs {
 		if err = s.subscriptions.invalidateSubscriptionCaches(v.UserID, v.GroupID); err != nil {
-			return len(changed), err
+			if schedule == nil {
+				return len(changed), err
+			}
+			cacheWarning = err
 		}
+	}
+	if cacheWarning != nil {
+		return len(changed), fmt.Errorf("%w: %v", ErrScheduledSubscriptionCacheRefresh, cacheWarning)
 	}
 	return len(changed), nil
 }
@@ -313,4 +390,20 @@ func (s *CustomCodexResetService) Manual(ctx context.Context, id int64, key, fin
 		return 0, err
 	}
 	return s.apply(ctx, id, fmt.Sprintf("manual:%d:%s", id, key), "", fingerprint, actor)
+}
+
+// Scheduled resolves active subscriptions inside the reset transaction while
+// pinning group scope and upstream identity to the saved plan.
+func (s *CustomCodexResetService) Scheduled(ctx context.Context, id int64, key string, expectedGroups []int64, actor int64, expectedIdentity ...string) (int, error) {
+	a, err := s.eligible(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	identity := customResetIdentity(a)
+	if len(expectedIdentity) > 0 {
+		identity = expectedIdentity[0]
+	}
+	groups := append([]int64{}, expectedGroups...)
+	sort.Slice(groups, func(i, j int) bool { return groups[i] < groups[j] })
+	return s.applyWithSchedule(ctx, id, fmt.Sprintf("scheduled:%d:%s", id, key), "", "", actor, &customScheduledResetScope{groups: groups, identity: identity})
 }

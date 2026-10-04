@@ -358,7 +358,18 @@ func (s *OpenAIQuotaService) ResetCreditTargeted(ctx context.Context, accountID 
 	return s.resetCredit(ctx, accountID, creditID, redeemRequestID, true)
 }
 
-func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, creditID, redeemRequestID string, targeted bool) (*OpenAIQuotaResetResult, error) {
+// ResetCreditTargetedForSchedule pins redemption to the upstream identity
+// approved in the saved plan, including identity changes during a quota query.
+func (s *OpenAIQuotaService) ResetCreditTargetedForSchedule(ctx context.Context, accountID int64, creditID, redeemRequestID, expectedIdentity string) (*OpenAIQuotaResetResult, error) {
+	creditID = strings.TrimSpace(creditID)
+	redeemRequestID = strings.TrimSpace(redeemRequestID)
+	if creditID == "" || redeemRequestID == "" || expectedIdentity == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_QUOTA_TARGETED_RESET_INVALID", "A card, request ID and approved identity are required")
+	}
+	return s.resetCredit(ctx, accountID, creditID, redeemRequestID, true, expectedIdentity)
+}
+
+func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, creditID, redeemRequestID string, targeted bool, expectedIdentity ...string) (*OpenAIQuotaResetResult, error) {
 	if s.customResetGuard != nil {
 		release, err := s.customResetGuard(ctx, accountID)
 		if err != nil {
@@ -387,6 +398,12 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 	accessToken, chatGPTAccountID, proxyURL, fedRAMP, err := s.prepareUpstreamCall(ctx, accountID)
 	if err != nil {
 		return nil, err
+	}
+	if len(expectedIdentity) > 0 {
+		actual := customResetIdentity(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": chatGPTAccountID}})
+		if actual != expectedIdentity[0] {
+			return nil, infraerrors.Conflict("ACCOUNT_SCHEDULE_IDENTITY_CHANGED", "Account identity changed; save the schedule again")
+		}
 	}
 
 	client, err := s.privacyClientFactory(proxyURL)

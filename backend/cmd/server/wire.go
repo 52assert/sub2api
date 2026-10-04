@@ -130,6 +130,7 @@ func provideCleanup(
 	auditLog *service.AuditLogService,
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	customCodexReset *service.CustomCodexResetService,
+	accountSchedules *service.CustomAccountScheduleService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
 ) func() {
@@ -144,6 +145,7 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"CustomAccountScheduleService", func() error { accountSchedules.Stop(); return nil }},
 			{"IntelligenceTestService", func() error { intelligenceTests.Stop(); return nil }},
 			{"CustomCodexResetService", func() error { customCodexReset.Stop(); return nil }},
 			{"PluginManager", func() error {

@@ -100,6 +100,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // auditLog
 		nil, // openAIAutoReset
 		nil, // customCodexReset
+		service.NewCustomAccountScheduleService(nil, nil, nil, nil, nil, "UTC"),
 		nil, // promptAudit
 		nil, // pluginManager
 	)

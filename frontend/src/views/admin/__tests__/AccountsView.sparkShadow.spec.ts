@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+import AccountActionSchedulesModal from '@/components/admin/account/AccountActionSchedulesModal.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
@@ -86,6 +87,8 @@ const mountView = () =>
         AccountTestModal: true,
         AccountStatsModal: true,
         ScheduledTestsPanel: true,
+        AccountSubscriptionResetModal: true,
+        AccountActionSchedulesModal: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,
@@ -121,6 +124,26 @@ describe('admin AccountsView — 外审 F2:spark 影子创建接线', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('opens and closes scheduled actions from the account menu and refreshes after saving', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const account = { id: 42, name: 'Scheduled account', platform: 'openai', type: 'oauth' }
+    wrapper.findComponent(AccountActionMenu).vm.$emit('action-schedules', account)
+    await flushPromises()
+    const modal = wrapper.findComponent(AccountActionSchedulesModal)
+    expect(modal.props('show')).toBe(true)
+    expect(modal.props('account')).toEqual(account)
+    const calls = listAccounts.mock.calls.length
+    modal.vm.$emit('updated')
+    await flushPromises()
+    expect(listAccounts.mock.calls.length).toBeGreaterThan(calls)
+    modal.vm.$emit('close')
+    await flushPromises()
+    expect(modal.props('show')).toBe(false)
+    expect(modal.props('account')).toBeNull()
+    wrapper.unmount()
   })
 
   it('AccountActionMenu 的 duplicate 事件一键复制账号并刷新列表', async () => {
@@ -238,6 +261,8 @@ const mountViewWithRow = () =>
         AccountTestModal: true,
         AccountStatsModal: true,
         ScheduledTestsPanel: true,
+        AccountSubscriptionResetModal: true,
+        AccountActionSchedulesModal: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,

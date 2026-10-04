@@ -461,7 +461,7 @@
     <AccountIntelligenceTestModal :show="showIntelligenceTest" :account="intelligenceTestingAcc" @close="closeIntelligenceTestModal" @created="handleIntelligenceTestCreated" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @intelligence-test="handleIntelligenceTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @reset-subscriptions="subscriptionResetAccount = $event" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @intelligence-test="handleIntelligenceTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @reset-subscriptions="subscriptionResetAccount = $event" @action-schedules="actionSchedulesAccount = $event" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -476,6 +476,7 @@
       @updated="handleBulkUpdated"
     />
     <AccountSubscriptionResetModal :show="!!subscriptionResetAccount" :account="subscriptionResetAccount" @close="subscriptionResetAccount = null" @updated="reload" />
+    <AccountActionSchedulesModal :show="!!actionSchedulesAccount" :account="actionSchedulesAccount" @close="actionSchedulesAccount = null" @updated="reload" />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showCreateShadowDialog" :title="t('admin.accounts.createSparkShadow')" :message="t('admin.accounts.createSparkShadowConfirm', { name: creatingShadowAcc?.name })" @confirm="confirmCreateSparkShadow" @cancel="showCreateShadowDialog = false" />
@@ -516,6 +517,7 @@ import AccountTableFilters from '@/components/admin/account/AccountTableFilters.
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import AccountSubscriptionResetModal from '@/components/admin/account/AccountSubscriptionResetModal.vue'
+import AccountActionSchedulesModal from '@/components/admin/account/AccountActionSchedulesModal.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
@@ -1383,6 +1385,7 @@ const isAnyModalOpen = computed(() => {
     showIntelligenceTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
+    !!actionSchedulesAccount.value ||
     showErrorPassthrough.value ||
     showTLSFingerprintProfiles.value
   )
@@ -2397,6 +2400,7 @@ const handleRecoverState = async (a: Account) => {
   }
 }
 const subscriptionResetAccount = ref<Account | null>(null)
+const actionSchedulesAccount = ref<Account | null>(null)
 
 const handleResetQuota = async (a: Account) => {
   try {
