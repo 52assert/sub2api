@@ -51,6 +51,28 @@ const getBodyText = () => document.body.textContent ?? ''
 const getBodyButtons = () => Array.from(document.body.querySelectorAll('button'))
 
 describe('AccountActionMenu — spark shadow 按钮可见性', () => {
+  it('opens scheduled actions for an OpenAI OAuth parent account', async () => {
+    const account = makeAccount({ parent_account_id: null })
+    const wrapper = mount(AccountActionMenu, { props: { show: true, account, anchorRect }, attachTo: document.body })
+    const action = document.body.querySelector<HTMLButtonElement>('[data-testid="account-action-schedules-action"]')
+    expect(action).not.toBeNull()
+    action!.click()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('action-schedules')?.[0]).toEqual([account])
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it.each([
+    { platform: 'openai', type: 'oauth', parent_account_id: 42 },
+    { platform: 'openai', type: 'apikey', parent_account_id: null },
+    { platform: 'anthropic', type: 'oauth', parent_account_id: null }
+  ] as const)('does not offer unsupported scheduled resets for %o', (settings) => {
+    const wrapper = mount(AccountActionMenu, { props: { show: true, account: makeAccount(settings), anchorRect }, attachTo: document.body })
+    expect(document.body.querySelector('[data-testid="account-action-schedules-action"]')).toBeNull()
+    wrapper.unmount()
+  })
+
   it('普通账号显示「复制账号」按钮', () => {
     const account = makeAccount({ platform: 'anthropic', type: 'apikey', parent_account_id: null })
     const wrapper = mount(AccountActionMenu, {

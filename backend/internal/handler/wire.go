@@ -51,9 +51,11 @@ func ProvideAdminHandlers(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
 	customCodexReset *service.CustomCodexResetService,
+	accountSchedules *service.CustomAccountScheduleService,
 	claudeResetCredits *service.ClaudeResetCreditService,
 ) *AdminHandlers {
 	accountHandler.SetCustomCodexResetService(customCodexReset)
+	accountHandler.SetCustomAccountScheduleService(accountSchedules)
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)

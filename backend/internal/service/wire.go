@@ -859,6 +859,7 @@ func ProvideAPIKeyService(
 var ProviderSet = wire.NewSet(
 	ProvideIntelligenceTestService,
 	ProvideCustomCodexResetService,
+	ProvideCustomAccountScheduleService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
@@ -1085,6 +1086,16 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 func ProvideCustomCodexResetService(db *sql.DB, accounts AccountRepository, subscriptions *SubscriptionService, usage *AccountUsageService) *CustomCodexResetService {
 	s := NewCustomCodexResetService(db, accounts, subscriptions)
 	s.probe = usage.probeCustomCodexReset
+	s.Start()
+	return s
+}
+
+func ProvideCustomAccountScheduleService(db *sql.DB, accounts AccountRepository, quota *OpenAIQuotaService, rateLimit *RateLimitService, resets *CustomCodexResetService, cfg *config.Config) *CustomAccountScheduleService {
+	zone := "UTC"
+	if cfg != nil && cfg.Timezone != "" {
+		zone = cfg.Timezone
+	}
+	s := NewCustomAccountScheduleService(db, accounts, quota, rateLimit, resets, zone)
 	s.Start()
 	return s
 }
