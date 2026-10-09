@@ -207,14 +207,20 @@
 
         <template #cell-cost="{ row }">
           <div class="text-sm">
-            <div class="flex items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-1.5">
               <span class="font-medium text-green-600 dark:text-green-400">${{ row.actual_cost?.toFixed(6) || '0.000000' }}</span>
               <span
                 v-if="row.long_context_billing_applied"
                 data-testid="long-context-billing-marker"
                 :title="t('admin.usage.longContextPricingTooltip')"
-                class="inline-flex items-center rounded px-1 py-px text-[10px] font-semibold leading-tight bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-500/30"
+                class="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-px text-[10px] font-semibold leading-tight bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-500/30"
               >{{ t('admin.usage.longContext') }}</span>
+              <span
+                v-if="['priority', 'ultrafast'].includes(normalizeUsageServiceTier(row.service_tier) ?? '')"
+                data-testid="fast-billing-marker"
+                :title="getUsageServiceTierLabel(row.service_tier, t)"
+                class="inline-flex shrink-0 items-center whitespace-nowrap rounded px-1 py-px text-[10px] font-semibold leading-tight bg-cyan-100 text-cyan-700 ring-1 ring-inset ring-cyan-200 dark:bg-cyan-500/20 dark:text-cyan-300 dark:ring-cyan-500/30"
+              >{{ getUsageServiceTierLabel(row.service_tier, t) }}</span>
               <!-- Cost Detail Tooltip -->
               <div
                 class="group relative"
@@ -451,6 +457,14 @@
                 <span class="text-gray-400">{{ t('usage.imageOutputTokenPrice') }}</span>
                 <span class="font-medium text-pink-300">{{ formatTokenPricePerMillion(tooltipData.image_output_cost ?? 0, tooltipData.image_output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
               </div>
+              <div v-if="tooltipData.cache_creation_tokens > 0" class="flex items-center justify-between gap-4">
+                <span class="text-gray-400">{{ t(tooltipData.cache_creation_5m_tokens > 0 && tooltipData.cache_creation_1h_tokens > 0 ? 'usage.cacheCreationAverageTokenPrice' : 'usage.cacheCreationTokenPrice') }}</span>
+                <span class="font-medium text-amber-300">{{ formatTokenPricePerMillion(tooltipData.cache_creation_cost, tooltipData.cache_creation_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+              </div>
+              <div v-if="tooltipData.cache_read_tokens > 0" class="flex items-center justify-between gap-4">
+                <span class="text-gray-400">{{ t('usage.cacheReadTokenPrice') }}</span>
+                <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.cache_read_cost, tooltipData.cache_read_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+              </div>
             </template>
             <template v-else-if="tooltipData && isImageUsage(tooltipData)">
               <div class="flex items-center justify-between gap-4">
@@ -547,7 +561,7 @@ import { useAppStore } from '@/stores/app'
 import { formatDateTime, formatReasoningEffort, reasoningEffortValuesEqual } from '@/utils/format'
 import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
-import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
+import { getUsageServiceTierLabel, normalizeUsageServiceTier } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
 import { calculateUsageTokensPerSecond, formatUsageTokensPerSecond } from '@/utils/usageThroughput'
 import {
