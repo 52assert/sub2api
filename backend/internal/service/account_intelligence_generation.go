@@ -101,17 +101,14 @@ func (s *AccountTestService) ValidateIntelligenceTest(account *Account, model, e
 		protocol = "gemini"
 	case account.Platform == PlatformGrok:
 		protocol = "responses"
-	case account.IsOpenCodeGo():
-		proto := account.GetAPIProtocol()
-		if proto != APIProtocolAnthropic && proto != APIProtocolChatCompletions && proto != APIProtocolResponses {
-			proto = openCodeGoNativeProtocol(account, mapped)
-		}
+	case account.routesByModel():
+		proto := account.resolveModelRoutedProtocol(mapped)
 		if proto == APIProtocolResponses {
 			protocol = "responses"
 		} else if proto != APIProtocolAnthropic {
 			protocol = "chat"
 		}
-	case account.IsCNProvider():
+	case account.RoutesProtocolByInbound():
 		if account.GetAPIProtocol() == APIProtocolResponses {
 			protocol = "responses"
 		} else if account.GetAPIProtocol() != APIProtocolAnthropic {

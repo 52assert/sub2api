@@ -34,6 +34,11 @@ func TestRunIntelligenceTestSendsPromptEffortAndGenerationBudget(t *testing.T) {
 		{name: "CN adaptive one generation", platform: PlatformDeepseek, model: "deepseek-v4-flash", effort: "high", protocol: "chat"},
 		{name: "OpenCode Responses", platform: PlatformOpenCodeGo, model: "grok-4.6", effort: "high", protocol: "responses"},
 		{name: "OpenCode Anthropic", platform: PlatformOpenCodeGo, model: "minimax-m3", effort: "default", protocol: "anthropic"},
+		{name: "Command Code Chat", platform: PlatformCommandCode, model: "deepseek/deepseek-v4-flash", effort: "high", protocol: "chat"},
+		{name: "Command Code Responses", platform: PlatformCommandCode, model: "gpt-5.4", effort: "high", protocol: "responses"},
+		{name: "Command Code Anthropic", platform: PlatformCommandCode, model: "claude-sonnet-4-6", effort: "high", protocol: "anthropic"},
+		{name: "Cline Chat", platform: PlatformCline, model: "deepseek/deepseek-v4-flash", effort: "high", protocol: "chat"},
+		{name: "Cline Claude Chat", platform: PlatformCline, model: "anthropic/claude-sonnet-4-6", effort: "high", protocol: "chat"},
 		{name: "Grok Responses", platform: PlatformGrok, model: "grok-4.6", effort: "high", protocol: "responses"},
 	}
 	for _, tc := range cases {
