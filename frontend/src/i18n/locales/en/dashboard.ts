@@ -399,6 +399,8 @@ export default {
     tokensPerSecondHint: 'Stream / WS: output tokens ÷ (total duration − time to first token). Sync: output tokens ÷ total duration. Times are in seconds; rounded to one decimal. Estimated from recorded output tokens, which may include reasoning tokens. Missing valid timing or non-text generation shows -.',
     latencyFirstToken: 'First',
     latencyDuration: 'Total',
+    outputTps: 'Output TPS',
+    outputTpsHint: 'Output tokens divided by total duration, including first-token wait, in tok/s. Output tokens may include reasoning tokens.',
     time: 'Time',
     ws: 'WS',
     stream: 'Stream',
