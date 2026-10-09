@@ -18,6 +18,8 @@ import { nextTick } from 'vue'
 
 import en from '@/i18n/locales/en/admin/resources'
 import zh from '@/i18n/locales/zh/admin/resources'
+import enDashboard from '@/i18n/locales/en/dashboard'
+import zhDashboard from '@/i18n/locales/zh/dashboard'
 import UsageTable from '../UsageTable.vue'
 import type { AdminUsageLog } from '@/types'
 
@@ -26,10 +28,16 @@ const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
   en: {
     'admin.usage.longContext': en.usage.longContext,
     'admin.usage.longContextPricingTooltip': en.usage.longContextPricingTooltip,
+    'usage.cacheCreationTokenPrice': enDashboard.usage.cacheCreationTokenPrice,
+    'usage.cacheCreationAverageTokenPrice': enDashboard.usage.cacheCreationAverageTokenPrice,
+    'usage.cacheReadTokenPrice': enDashboard.usage.cacheReadTokenPrice,
   },
   zh: {
     'admin.usage.longContext': zh.usage.longContext,
     'admin.usage.longContextPricingTooltip': zh.usage.longContextPricingTooltip,
+    'usage.cacheCreationTokenPrice': zhDashboard.usage.cacheCreationTokenPrice,
+    'usage.cacheCreationAverageTokenPrice': zhDashboard.usage.cacheCreationAverageTokenPrice,
+    'usage.cacheReadTokenPrice': zhDashboard.usage.cacheReadTokenPrice,
   },
 }
 
@@ -271,6 +279,126 @@ describe('admin UsageTable tooltip', () => {
     expect(wrapper.find('[data-request-id="req-long-context-disabled"] [data-testid="long-context-billing-marker"]').exists()).toBe(false)
     expect(wrapper.find('[data-request-id="req-long-context-absent"] [data-testid="long-context-billing-marker"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('x2')
+  })
+
+  it.each([true, false])('marks only Fast tiers beside the cost, including free requests (account billing: %s)', (showAccountBilling) => {
+    const tiers = ['priority', '  FAST  ', ' Ultrafast ', 'flex', 'default', 'standard', 'auto', 'scale', null, undefined, 'unknown']
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: tiers.map((service_tier, index) => ({
+          ...baseImageRow,
+          request_id: `req-tier-${index}`,
+          service_tier,
+          actual_cost: 0,
+          rate_multiplier: 0,
+          long_context_billing_applied: index === 0,
+        })),
+        columns: [],
+        showAccountBilling,
+      },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+
+    expect(wrapper.findAll('[data-testid="fast-billing-marker"]')).toHaveLength(3)
+    for (const [index, label] of ['Fast', 'Fast', 'Ultrafast'].entries()) {
+      const marker = wrapper.get(`[data-request-id="req-tier-${index}"] [data-testid="fast-billing-marker"]`)
+      expect(marker.text()).toBe(label)
+      expect(marker.attributes('title')).toBe(label)
+      expect(marker.element.parentElement?.textContent).toContain('$0.000000')
+    }
+    expect(wrapper.get('[data-request-id="req-tier-0"] [data-testid="long-context-billing-marker"]').text()).toBe('Long context')
+    for (let index = 3; index < tiers.length; index++) {
+      expect(wrapper.get(`[data-request-id="req-tier-${index}"]`).find('[data-testid="fast-billing-marker"]').exists()).toBe(false)
+    }
+    wrapper.unmount()
+  })
+
+  it.each([
+    { language: 'en', showAccountBilling: true },
+    { language: 'zh', showAccountBilling: false },
+  ] as const)('shows cache unit prices from stored costs for $language rows (account billing: $showAccountBilling)', async ({ language, showAccountBilling }) => {
+    locale = language
+    const row = {
+      ...baseImageRow,
+      billing_mode: 'token',
+      image_count: 0,
+      cache_creation_tokens: 4_000,
+      cache_creation_5m_tokens: 1_000,
+      cache_creation_1h_tokens: 3_000,
+      cache_creation_cost: 0.0250008,
+      cache_read_tokens: 20_000,
+      cache_read_cost: 0.0036008,
+      total_cost: 0.0286016,
+      actual_cost: 0,
+      rate_multiplier: 0,
+      account_rate_multiplier: 0.5,
+    }
+    const wrapper = mount(UsageTable, {
+      props: { data: [row], columns: [], showAccountBilling },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    const openCostTooltip = async () => {
+      const triggers = wrapper.findAll('.group.relative')
+      await triggers[triggers.length - 1].trigger('mouseenter')
+      return wrapper.get('.fixed')
+    }
+    const tooltip = await openCostTooltip()
+    const averageLabel = localizedMessages[language]['usage.cacheCreationAverageTokenPrice']
+    const readLabel = localizedMessages[language]['usage.cacheReadTokenPrice']
+    expect(averageLabel).toBeTruthy()
+    expect(readLabel).toBeTruthy()
+    expect(tooltip.findAll('span').find(span => span.text() === averageLabel)?.element.parentElement?.textContent)
+      .toContain('$6.2502 / 1M tokens')
+    expect(tooltip.findAll('span').find(span => span.text() === readLabel)?.element.parentElement?.textContent)
+      .toContain('$0.1800 / 1M tokens')
+    expect(tooltip.text()).not.toContain(localizedMessages[language]['usage.cacheCreationTokenPrice'])
+
+    await wrapper.setProps({ data: [{ ...row, cache_creation_5m_tokens: 0, cache_creation_1h_tokens: 4_000, rate_multiplier: 0.25, actual_cost: row.total_cost * 0.25 }] })
+    const singleTtlTooltip = await openCostTooltip()
+    const writeLabel = localizedMessages[language]['usage.cacheCreationTokenPrice']
+    expect(writeLabel).toBeTruthy()
+    expect(singleTtlTooltip.findAll('span').find(span => span.text() === writeLabel)?.element.parentElement?.textContent)
+      .toContain('$6.2502 / 1M tokens')
+    expect(singleTtlTooltip.text()).not.toContain(averageLabel)
+    wrapper.unmount()
+  })
+
+  it('shows zero cache prices when tokens exist and hides prices when token counts are zero', async () => {
+    const row = { ...baseImageRow, billing_mode: 'token', image_count: 0, cache_creation_tokens: 1_000, cache_read_tokens: 2_000 }
+    const wrapper = mount(UsageTable, {
+      props: { data: [row], columns: [] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    const triggers = wrapper.findAll('.group.relative')
+    await triggers[triggers.length - 1].trigger('mouseenter')
+    const labels = ['usage.cacheCreationTokenPrice', 'usage.cacheReadTokenPrice'].map(key => localizedMessages.en[key])
+    for (const label of labels) {
+      expect(wrapper.get('.fixed').findAll('span').find(span => span.text() === label)?.element.parentElement?.textContent)
+        .toContain('$0.0000 / 1M tokens')
+    }
+
+    await wrapper.setProps({ data: [{ ...row, cache_creation_tokens: 0, cache_read_tokens: 0, cache_creation_cost: 0.01, cache_read_cost: 0.02 }] })
+    const updatedTriggers = wrapper.findAll('.group.relative')
+    await updatedTriggers[updatedTriggers.length - 1].trigger('mouseenter')
+    for (const label of labels) expect(wrapper.get('.fixed').text()).not.toContain(label)
+    wrapper.unmount()
+  })
+
+  it.each(['image', 'per_request'])('hides cache unit prices for %s billing even when cache tokens exist', async (billing_mode) => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ ...baseImageRow, billing_mode, image_count: billing_mode === 'image' ? 2 : 0, cache_creation_tokens: 1_000, cache_read_tokens: 2_000, cache_creation_cost: 0.01, cache_read_cost: 0.02 }],
+        columns: [],
+      },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    const triggers = wrapper.findAll('.group.relative')
+    await triggers[triggers.length - 1].trigger('mouseenter')
+    const text = wrapper.get('.fixed').text()
+    for (const key of ['usage.cacheCreationTokenPrice', 'usage.cacheCreationAverageTokenPrice', 'usage.cacheReadTokenPrice']) {
+      expect(text).not.toContain(localizedMessages.en[key])
+    }
+    wrapper.unmount()
   })
 
   it('keeps the request type badge and adds a separate badge only for native compaction rows', () => {
