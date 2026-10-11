@@ -68,9 +68,15 @@ describe('AccountActionMenu viewport positioning', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('does not offer artifact generation for TypeSafe embedding accounts', async () => {
+  it.each([
+    { platform: 'typesafe', type: 'apikey' },
+    { platform: 'anthropic', type: 'oauth' },
+    { platform: 'gemini', type: 'oauth' },
+    { platform: 'grok', type: 'oauth' },
+    { platform: 'openai', type: 'setup-token' }
+  ] as const)('does not offer Codex CLI intelligence tests for unsupported accounts %o', async (settings) => {
     const wrapper = await mountMenu()
-    await wrapper.setProps({ account: { ...account, platform: 'typesafe', type: 'apikey' } })
+    await wrapper.setProps({ account: { ...account, ...settings } })
     expect(getMenu().querySelector('[data-testid="account-intelligence-test-action"]')).toBeNull()
     expect(getMenu().textContent).toContain('admin.accounts.testConnection')
   })

@@ -2159,9 +2159,9 @@ export interface BulkAssignSubscriptionRequest {
   validity_days?: number
 }
 
-export interface ExtendSubscriptionRequest {
-  days: number
-}
+export type ExtendSubscriptionRequest =
+  | { days: number; expires_at?: never }
+  | { expires_at: string; days?: never }
 
 // ==================== Query Parameters ====================
 

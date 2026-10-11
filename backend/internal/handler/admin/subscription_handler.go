@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -57,7 +59,32 @@ type BulkAssignSubscriptionRequest struct {
 
 // AdjustSubscriptionRequest represents adjust subscription request (extend or shorten)
 type AdjustSubscriptionRequest struct {
-	Days int `json:"days" binding:"required,min=-36500,max=36500"` // negative to shorten, positive to extend
+	Days      *int    `json:"days,omitempty" binding:"omitempty,min=-36500,max=36500"` // negative to shorten, positive to extend
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+// time.Parse accepts some non-RFC3339 forms (such as a one-digit hour or
+// out-of-range offset). Require the wire format before parsing the calendar date.
+var subscriptionExpiryPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$`)
+
+func (req AdjustSubscriptionRequest) expirationTime() (*time.Time, error) {
+	if (req.Days == nil) == (req.ExpiresAt == nil) {
+		return nil, fmt.Errorf("provide exactly one of days or expires_at")
+	}
+	if req.Days != nil {
+		if *req.Days == 0 {
+			return nil, fmt.Errorf("days must be nonzero")
+		}
+		return nil, nil
+	}
+	if !subscriptionExpiryPattern.MatchString(*req.ExpiresAt) {
+		return nil, fmt.Errorf("expires_at must be an RFC3339 timestamp with a timezone")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, *req.ExpiresAt)
+	if err != nil || expiresAt.IsZero() || expiresAt.After(service.MaxExpiresAt) {
+		return nil, fmt.Errorf("expires_at must be a valid timestamp no later than 2099-12-31T23:59:59Z")
+	}
+	return &expiresAt, nil
 }
 
 // List handles listing all subscriptions with pagination and filters
@@ -219,6 +246,12 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 		return
 	}
 
+	expiresAt, err := req.expirationTime()
+	if err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
 	idempotencyPayload := struct {
 		SubscriptionID int64                     `json:"subscription_id"`
 		Body           AdjustSubscriptionRequest `json:"body"`
@@ -227,7 +260,13 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 		Body:           req,
 	}
 	executeAdminIdempotentJSON(c, "admin.subscriptions.extend", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		subscription, execErr := h.subscriptionService.ExtendSubscription(ctx, subscriptionID, req.Days)
+		var subscription *service.UserSubscription
+		var execErr error
+		if expiresAt != nil {
+			subscription, execErr = h.subscriptionService.SetSubscriptionExpiry(ctx, subscriptionID, *expiresAt)
+		} else {
+			subscription, execErr = h.subscriptionService.ExtendSubscription(ctx, subscriptionID, *req.Days)
+		}
 		if execErr != nil {
 			return nil, execErr
 		}

@@ -134,9 +134,9 @@ export async function bulkAssign(
 }
 
 /**
- * Extend subscription validity
+ * Adjust subscription validity by days or set an exact expiration
  * @param id - Subscription ID
- * @param request - Extension request with days
+ * @param request - Nonzero days or an absolute RFC3339 expiration, exclusively
  * @returns Updated subscription
  */
 export async function extend(

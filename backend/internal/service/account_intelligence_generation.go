@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -261,61 +260,16 @@ func validateIntelligenceEffort(protocol, model, effort string) error {
 	return nil
 }
 
-// RunIntelligenceTest reuses account connectivity routing, authentication,
-// proxies and model mappings, but opts into generation budgets and strict
-// completion checks. It retains only final text, with a bounded in-memory sink.
+// RunIntelligenceTest runs the native Codex CLI with the selected account.
 func (s *AccountTestService) RunIntelligenceTest(ctx context.Context, accountID int64, model, prompt, reasoningEffort string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	parentContext := ctx
-	if strings.TrimSpace(prompt) == "" {
-		return "", errors.New("请输入测试提示词")
-	}
-	if len(prompt) > 64<<10 {
-		return "", errors.New("测试提示词不能超过 64 KiB")
-	}
 	if s == nil || s.accountRepo == nil {
 		return "", errors.New("Account test service is unavailable")
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
-	if err != nil {
-		return "", err
-	}
-	if err := s.ValidateIntelligenceTest(account, model, reasoningEffort); err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
-	if effort == "default" {
-		effort = ""
-	}
-	ctx = context.WithValue(ctx, accountIntelligenceContextKey{}, &accountIntelligenceRequest{prompt: prompt, effort: effort, maxTokens: intelligenceOutputTokenBudget(account, strings.TrimSpace(model))})
-	ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileLongStream)
-	writer := &intelligenceCaptureWriter{header: make(http.Header), cancel: cancel}
-	c, _ := gin.CreateTestContext(writer)
-	c.Request = httptest.NewRequest(http.MethodPost, "/internal/intelligence-test", nil).WithContext(ctx)
-	err = s.TestAccountConnection(c, accountID, strings.TrimSpace(model), prompt, AccountTestModeDefault)
-	if err := parentContext.Err(); err != nil {
-		return "", err
-	}
-	if writer.err != nil {
-		return "", writer.err
-	}
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if !writer.complete {
-		return "", errors.New("测试响应未完整结束")
-	}
-	if strings.TrimSpace(writer.output.String()) == "" {
-		return "", errors.New("模型未返回可展示的内容")
-	}
-	return writer.output.String(), nil
+	result, err := s.RunIntelligenceTestDetailed(ctx, accountID, model, prompt, reasoningEffort, IntelligenceTestRunnerCodex)
+	return result.Output, err
 }
 
 type intelligenceCaptureWriter struct {

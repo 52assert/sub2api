@@ -47,7 +47,7 @@ describe('AccountIntelligenceTestModal', () => {
     const wrapper = mountModal()
     await flushPromises()
     expect(wrapper.get('textarea').element.value).toBe(DEFAULT_INTELLIGENCE_TEST_PROMPT)
-    expect(wrapper.get<HTMLSelectElement>('[data-testid="intelligence-test-runner"]').element.value).toBe('codex_cli')
+    expect(wrapper.get('[data-testid="intelligence-test-runner"]').text()).toBe('intelligenceTests.runners.codex_cli')
     expect(wrapper.text()).toContain('intelligenceTests.codexCliHint')
     await wrapper.get('[data-testid="intelligence-test-model"]').setValue('gpt-custom')
     await wrapper.get('[data-testid="intelligence-test-effort"]').setValue('xhigh')
@@ -64,28 +64,29 @@ describe('AccountIntelligenceTestModal', () => {
     wrapper.unmount()
   })
 
-  it('allows selecting HTTP requests for an OpenAI comparison test', async () => {
+  it('only offers Codex CLI execution without an HTTP runner selector', async () => {
     const wrapper = mountModal()
     await flushPromises()
-    await wrapper.get('[data-testid="intelligence-test-runner"]').setValue('http')
-    expect(wrapper.text()).not.toContain('intelligenceTests.codexCliHint')
+    expect(wrapper.find('select[data-testid="intelligence-test-runner"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('intelligenceTests.runners.http')
     await wrapper.get('form').trigger('submit')
-    expect(createIntelligenceTest).toHaveBeenCalledWith(42, { model: 'gpt-test', runner: 'http', reasoning_effort: 'default', prompt: DEFAULT_INTELLIGENCE_TEST_PROMPT })
+    expect(createIntelligenceTest).toHaveBeenCalledWith(42, { model: 'gpt-test', runner: 'codex_cli', reasoning_effort: 'default', prompt: DEFAULT_INTELLIGENCE_TEST_PROMPT })
     wrapper.unmount()
   })
 
-  it('only offers HTTP requests and resets the execution method when opening a non-OpenAI account', async () => {
+  it.each([
+    { platform: 'anthropic', type: 'oauth' },
+    { platform: 'openai', type: 'setup-token' }
+  ])('prevents submission after switching to an unsupported account %o', async (settings) => {
     const wrapper = mountModal()
     await flushPromises()
-    await wrapper.setProps({ account: { ...account, id: 43, platform: 'anthropic' } })
+    await wrapper.setProps({ account: { ...account, id: 43, ...settings } as Account })
     await flushPromises()
-    const selector = wrapper.get<HTMLSelectElement>('[data-testid="intelligence-test-runner"]')
-    expect(selector.element.value).toBe('http')
-    expect(selector.attributes('disabled')).toBeDefined()
-    expect(selector.findAll('option')).toHaveLength(1)
-    expect(wrapper.text()).not.toContain('intelligenceTests.codexCliHint')
+    expect(wrapper.get('[role="alert"]').text()).toBe('intelligenceTests.unsupportedAccount')
+    expect(wrapper.get('[data-testid="intelligence-test-submit"]').attributes('disabled')).toBeDefined()
+    expect(getAvailableModels).toHaveBeenCalledTimes(1)
     await wrapper.get('form').trigger('submit')
-    expect(createIntelligenceTest).toHaveBeenCalledWith(43, { model: 'gpt-test', runner: 'http', reasoning_effort: 'default', prompt: DEFAULT_INTELLIGENCE_TEST_PROMPT })
+    expect(createIntelligenceTest).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -106,13 +107,13 @@ describe('AccountIntelligenceTestModal', () => {
 
   it('ignores stale model discovery when a different account is opened', async () => {
     const stale = deferred<typeof models>()
-    getAvailableModels.mockReturnValueOnce(stale.promise).mockResolvedValueOnce([{ id: 'claude-custom', display_name: 'Claude' }])
+    getAvailableModels.mockReturnValueOnce(stale.promise).mockResolvedValueOnce([{ id: 'gpt-new-account', display_name: 'New account model' }])
     const wrapper = mountModal()
-    await wrapper.setProps({ account: { ...account, id: 43, platform: 'anthropic' } })
+    await wrapper.setProps({ account: { ...account, id: 43 } })
     await flushPromises()
     stale.resolve(models)
     await flushPromises()
-    expect(wrapper.get('select[data-testid="intelligence-test-model"]').element.value).toBe('claude-custom')
+    expect(wrapper.get('select[data-testid="intelligence-test-model"]').element.value).toBe('gpt-new-account')
     expect(wrapper.get('select[data-testid="intelligence-test-model"]').text()).not.toContain('GPT Test')
     wrapper.unmount()
   })

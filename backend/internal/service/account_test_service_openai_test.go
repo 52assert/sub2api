@@ -211,7 +211,7 @@ func TestAccountTestService_OpenAIShadowUsesParentCredentialsAndShadowModel(t *t
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
 	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
 
-	err := svc.TestAccountConnection(ctx, shadow.ID, "gpt-5.3-codex-spark", "", "")
+	err := svc.testOpenAIAccountConnection(ctx, shadow, "gpt-5.3-codex-spark", "", "")
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 1)
 	req := upstream.requests[0]

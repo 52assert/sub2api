@@ -131,14 +131,15 @@ func TestIntelligenceTestRepositoryPersistsAccountNameSnapshot(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	now := time.Now().UTC()
 	mock.ExpectQuery(`(?s)INSERT INTO intelligence_tests.*account_id, account_name.*RETURNING`).
-		WithArgs(int64(12), "Test account", "openai", "model", "high", "prompt", "http").
+		WithArgs(int64(12), "Test account", "openai", "model", "high", "prompt", "codex_cli").
 		WillReturnRows(sqlmock.NewRows(intelligenceTestMockColumns).
-			AddRow(4, 12, "Test account", "openai", "model", "high", "prompt", "queued", now, nil, nil, 0, "", "", "http", "", "", "", ""))
+			AddRow(4, 12, "Test account", "openai", "model", "high", "prompt", "queued", now, nil, nil, 0, "", "", "codex_cli", "", "", "", ""))
 	mock.ExpectCommit()
 	item := &service.IntelligenceTest{AccountID: 12, AccountName: "Test account", Platform: "openai", Model: "model", ReasoningEffort: "high", Prompt: "prompt"}
 	require.NoError(t, NewIntelligenceTestRepository(db).Create(context.Background(), item))
 	require.Equal(t, "Test account", item.AccountName)
 	require.Equal(t, int64(4), item.ID)
+	require.Equal(t, service.IntelligenceTestRunnerCodex, item.Runner)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

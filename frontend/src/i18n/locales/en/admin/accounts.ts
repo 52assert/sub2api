@@ -735,8 +735,10 @@ export default {
         compactUnknown: 'Compact Auto',
         compactLastChecked: 'Last compact probe',
         testMode: 'Test mode',
-        testModeDefault: 'Default request',
+        testModeDefault: 'Codex CLI',
         testModeCompact: 'Compact probe',
+        cliTestHint: 'Test the connection with Codex CLI using the selected account, model, and proxy.',
+        runningCliTest: 'Running Codex CLI...',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
       },
       grok: {

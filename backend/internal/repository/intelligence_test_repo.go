@@ -89,7 +89,7 @@ WHERE status IN ('queued', 'running')`).Scan(&outstanding); err != nil {
 		accountID = item.AccountID
 	}
 	if item.Runner == "" {
-		item.Runner = service.IntelligenceTestRunnerHTTP
+		item.Runner = service.IntelligenceTestRunnerCodex
 	}
 	created, err := scanIntelligenceTest(tx.QueryRowContext(ctx, `INSERT INTO intelligence_tests
 (account_id, account_name, platform, model, reasoning_effort, prompt, runner)

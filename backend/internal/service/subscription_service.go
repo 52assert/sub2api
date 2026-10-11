@@ -652,6 +652,18 @@ func (s *SubscriptionService) RestoreSubscription(ctx context.Context, subscript
 
 // ExtendSubscription 调整订阅时长（正数延长，负数缩短）
 func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscriptionID int64, days int) (*UserSubscription, error) {
+	return s.adjustSubscriptionExpiry(ctx, subscriptionID, days, nil)
+}
+
+// SetSubscriptionExpiry sets an exact expiration time without changing usage windows.
+func (s *SubscriptionService) SetSubscriptionExpiry(ctx context.Context, subscriptionID int64, expiresAt time.Time) (*UserSubscription, error) {
+	if expiresAt.IsZero() || expiresAt.After(MaxExpiresAt) {
+		return nil, infraerrors.BadRequest("INVALID_SUBSCRIPTION_EXPIRY", "expires_at must be no later than 2099-12-31T23:59:59Z")
+	}
+	return s.adjustSubscriptionExpiry(ctx, subscriptionID, 0, &expiresAt)
+}
+
+func (s *SubscriptionService) adjustSubscriptionExpiry(ctx context.Context, subscriptionID int64, days int, expiresAt *time.Time) (*UserSubscription, error) {
 	err := s.withSubscriptionUpdateTx(ctx, func(txCtx context.Context) error {
 		// Lock the row before reading its expiry. Without this lock, concurrent
 		// adjustments can both calculate from the same stale expiry and lose one
@@ -675,19 +687,22 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
 		}
 		isExpired := !sub.ExpiresAt.After(now)
 
-		// 如果订阅已过期，不允许负向调整
-		if isExpired && days < 0 {
-			return infraerrors.BadRequest("CANNOT_SHORTEN_EXPIRED", "cannot shorten an expired subscription")
-		}
-
-		// 计算新的过期时间
+		// 计算新的过期时间。绝对时间与按天调整共用同一个行锁和事务。
 		var newExpiresAt time.Time
-		if isExpired {
-			// 已过期：从当前时间开始增加天数
-			newExpiresAt = now.AddDate(0, 0, days)
+		if expiresAt != nil {
+			newExpiresAt = expiresAt.UTC()
 		} else {
-			// 未过期：从原过期时间增加/减少天数
-			newExpiresAt = sub.ExpiresAt.AddDate(0, 0, days)
+			// 如果订阅已过期，不允许负向调整
+			if isExpired && days < 0 {
+				return infraerrors.BadRequest("CANNOT_SHORTEN_EXPIRED", "cannot shorten an expired subscription")
+			}
+			if isExpired {
+				// 已过期：从当前时间开始增加天数
+				newExpiresAt = now.AddDate(0, 0, days)
+			} else {
+				// 未过期：从原过期时间增加/减少天数
+				newExpiresAt = sub.ExpiresAt.AddDate(0, 0, days)
+			}
 		}
 
 		if newExpiresAt.After(MaxExpiresAt) {

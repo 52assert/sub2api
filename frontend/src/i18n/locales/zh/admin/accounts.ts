@@ -844,8 +844,10 @@ export default {
         compactUnknown: 'Compact Auto',
         compactLastChecked: '最近探测',
         testMode: '测试模式',
-        testModeDefault: '常规请求',
+        testModeDefault: 'Codex CLI',
         testModeCompact: 'Compact 探测',
+        cliTestHint: '使用 Codex CLI 执行连接测试，沿用所选账号、模型和代理。',
+        runningCliTest: '正在运行 Codex CLI...',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       grok: {

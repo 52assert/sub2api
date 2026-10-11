@@ -353,8 +353,8 @@ func createTestPayload(modelID string) (map[string]any, error) {
 	}, nil
 }
 
-// TestAccountConnection tests an account's connection by sending a test request
-// All account types use full Claude Code client characteristics, only auth header differs
+// TestAccountConnection tests an account with its platform's native test path.
+// OpenAI text connections use Codex CLI with the selected account's credentials.
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
 // opts is optional media (image/audio data URLs for real generation / STT).
@@ -403,6 +403,13 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	if account.IsOpenAI() {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			modelID = openai.DefaultTestModel
+		}
+		if normalizeAccountTestMode(mode) != AccountTestModeCompact && !isOpenAIImageModel(account.GetMappedModel(modelID)) {
+			return s.testOpenAICLIConnection(c, account, modelID, prompt)
+		}
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
 

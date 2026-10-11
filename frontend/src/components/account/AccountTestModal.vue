@@ -64,6 +64,7 @@
           :options="openAITestModeOptions"
           :disabled="status === 'connecting'"
         />
+        <p v-if="isOpenAICliTest" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.cliTestHint') }}</p>
       </div>
 
       <div v-if="supportsImageTest" class="space-y-1.5">
@@ -90,7 +91,7 @@
           </div>
           <div v-else-if="status === 'connecting'" class="flex items-center gap-2 text-yellow-400">
             <Icon name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-            <span>{{ t('admin.accounts.connectingToApi') }}</span>
+            <span>{{ t(isOpenAICliTest ? 'admin.accounts.openai.runningCliTest' : 'admin.accounts.connectingToApi') }}</span>
           </div>
 
           <!-- Output Lines -->
@@ -189,7 +190,9 @@
           {{
             supportsImageTest
               ? t('admin.accounts.imageTestMode')
-              : t('admin.accounts.testPrompt')
+              : isOpenAICliTest
+                ? t('admin.accounts.openai.testModeDefault')
+                : t('admin.accounts.testPrompt')
           }}
         </span>
       </div>
@@ -289,7 +292,7 @@ const generatedImages = ref<PreviewImage[]>([])
 const testMode = ref<'default' | 'compact'>('default')
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const openAITestModeOptions = computed(() => [
-  { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
+  { value: 'default', label: t(supportsOpenAIImageTest.value ? 'admin.accounts.imageTestMode' : 'admin.accounts.openai.testModeDefault') },
   { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
 ])
 const previewImageUrl = ref('')
@@ -306,6 +309,7 @@ const supportsOpenAIImageTest = computed(() => {
   if (!modelID.startsWith('gpt-image-')) return false
   return props.account?.platform === 'openai'
 })
+const isOpenAICliTest = computed(() => isOpenAIAccount.value && !supportsOpenAIImageTest.value && testMode.value === 'default')
 
 const supportsImageTest = computed(() => supportsGeminiImageTest.value || supportsOpenAIImageTest.value)
 
