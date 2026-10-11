@@ -705,22 +705,6 @@
         </div>
         <div v-if="extendForm.mode === 'date'" class="space-y-5">
           <div>
-            <p class="input-label">{{ t('admin.subscriptions.expirationShortcuts') }}</p>
-            <div class="grid grid-cols-4 gap-2">
-              <button
-                v-for="days in expirationShortcutDays"
-                :key="days"
-                type="button"
-                :class="['rounded-xl border py-3 text-sm font-semibold tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50', selectedExpirationShortcut === days ? 'border-primary-500 bg-primary-50 text-primary-700 ring-1 ring-primary-500 dark:bg-primary-500/10 dark:text-primary-300' : 'border-gray-200 bg-white text-gray-600 hover:border-primary-300 hover:bg-primary-50/50 dark:border-dark-500 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-primary-500/60 dark:hover:bg-primary-500/5']"
-                :disabled="submitting"
-                :aria-pressed="selectedExpirationShortcut === days"
-                :data-test="`subscription-expiration-${days}`"
-                @click="selectExpirationShortcut(days)"
-              >{{ t('admin.subscriptions.expirationShortcutDays', { days }) }}</button>
-            </div>
-            <p class="mt-2 text-xs leading-5 text-gray-400 dark:text-gray-500">{{ t('admin.subscriptions.expirationShortcutHint') }}</p>
-          </div>
-          <div>
             <label for="subscription-expiration" class="input-label">{{ t('admin.subscriptions.expirationTime') }}</label>
             <DateTimePicker
               id="subscription-expiration"
@@ -728,8 +712,23 @@
               :min="minimumExpirationInput"
               :max="maximumExpirationInput"
               :disabled="submitting"
-              @update:model-value="selectedExpirationShortcut = null"
             />
+            <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.subscriptions.expirationTimeHint') }}</p>
+          </div>
+          <div data-test="subscription-expiration-shortcuts">
+            <p class="input-label">{{ t('admin.subscriptions.expirationShortcuts') }}</p>
+            <div class="grid grid-cols-4 gap-2">
+              <button
+                v-for="days in expirationShortcutDays"
+                :key="days"
+                type="button"
+                class="rounded-xl border border-gray-200 bg-white py-3 text-sm font-semibold tabular-nums text-gray-600 transition-all hover:border-primary-300 hover:bg-primary-50/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50 dark:border-dark-500 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-primary-500/60 dark:hover:bg-primary-500/5"
+                :disabled="submitting"
+                :data-test="`subscription-expiration-${days}`"
+                @click="selectExpirationShortcut(days)"
+              >{{ t('admin.subscriptions.expirationShortcutDays', { days }) }}</button>
+            </div>
+            <p class="mt-2 text-xs leading-5 text-gray-400 dark:text-gray-500">{{ t('admin.subscriptions.expirationShortcutHint') }}</p>
           </div>
         </div>
         <div v-else>
@@ -1167,7 +1166,6 @@ const extendForm = reactive({
 const adjustmentNow = ref(Date.now())
 const browserTimeZone = getBrowserTimeZone()
 const expirationShortcutDays = [7, 30, 90, 365]
-const selectedExpirationShortcut = ref<number | null>(30)
 const minimumExpirationInput = computed(() => formatSubscriptionExpirationInput(adjustmentNow.value + 1))
 const maximumExpirationInput = formatSubscriptionExpirationInput(MAX_SUBSCRIPTION_EXPIRATION)
 const adjustmentModeOptions = computed(() => [
@@ -1470,7 +1468,11 @@ const handleExtend = (subscription: UserSubscription) => {
   extendingSubscription.value = subscription
   extendForm.mode = 'date'
   extendForm.days = 30
-  selectExpirationShortcut(30)
+  adjustmentNow.value = Date.now()
+  const expiration = subscription.expires_at ? Date.parse(subscription.expires_at) : NaN
+  extendForm.expires_at = Number.isFinite(expiration) && expiration > adjustmentNow.value && expiration <= MAX_SUBSCRIPTION_EXPIRATION
+    ? formatSubscriptionExpirationInput(expiration)
+    : ''
   showExtendModal.value = true
 }
 
@@ -1478,7 +1480,6 @@ const selectExpirationShortcut = (days: number) => {
   adjustmentNow.value = Date.now()
   const expiration = subscriptionExpirationAfterDays(extendingSubscription.value?.expires_at, days, adjustmentNow.value)
   extendForm.expires_at = formatSubscriptionExpirationInput(expiration)
-  selectedExpirationShortcut.value = days
 }
 
 const closeExtendModal = () => {
