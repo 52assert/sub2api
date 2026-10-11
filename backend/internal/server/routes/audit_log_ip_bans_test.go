@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -23,7 +24,7 @@ func TestAuditLogIPBanRoutesListAndUnban(t *testing.T) {
 	rdb := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: rdb.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	protection := service.NewLoginProtectionService(client)
+	protection := service.NewLoginProtectionService(repository.NewLoginProtectionCache(client))
 	ctx := context.Background()
 	for range 3 {
 		_, _, err := protection.RecordFailure(ctx, "203.0.113.10")

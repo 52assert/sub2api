@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -21,7 +22,7 @@ func loginProtectionTestRouter(t *testing.T) (*gin.Engine, *service.LoginProtect
 	rdb := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: rdb.Addr(), MaxRetries: -1, DialTimeout: 50 * time.Millisecond})
 	t.Cleanup(func() { _ = client.Close() })
-	protection := service.NewLoginProtectionService(client)
+	protection := service.NewLoginProtectionService(repository.NewLoginProtectionCache(client))
 	repo := &auditCaptureRepository{}
 	audit := service.NewAuditLogService(repo, nil)
 	audit.Start()

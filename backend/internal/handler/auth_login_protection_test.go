@@ -1,3 +1,5 @@
+//go:build unit
+
 package handler
 
 import (
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -28,7 +31,7 @@ func newProtectedLoginRouter(t *testing.T) *gin.Engine {
 	t.Cleanup(func() { _ = client.Close() })
 	router := gin.New()
 	require.NoError(t, router.SetTrustedProxies(nil))
-	router.Use(middleware2.NewLoginProtectionMiddleware(service.NewLoginProtectionService(client)))
+	router.Use(middleware2.NewLoginProtectionMiddleware(service.NewLoginProtectionService(repository.NewLoginProtectionCache(client))))
 	return router
 }
 
@@ -174,4 +177,46 @@ func TestOAuthBindLoginSharesFailureCountWithPasswordLogin(t *testing.T) {
 	stored, err := client.PendingAuthSession.Get(context.Background(), session.ID)
 	require.NoError(t, err)
 	require.Nil(t, stored.ConsumedAt)
+}
+
+type passkeyFinishLoginSessionStub struct {
+	service.PasskeySessionStore
+	session *service.PasskeySession
+}
+
+func (s *passkeyFinishLoginSessionStub) Consume(context.Context, string) (*service.PasskeySession, error) {
+	return s.session, nil
+}
+
+func TestPasskeyFinishLoginProtectionBansFailedAssertionsButNotExpiredSessions(t *testing.T) {
+	cfg := &config.Config{WebAuthn: config.WebAuthnConfig{
+		Enabled:       true,
+		RPDisplayName: "Sub2API",
+		RPID:          "sub2api.example.com",
+		RPOrigins:     []string{"https://sub2api.example.com"},
+	}}
+	settings := service.NewSettingService(&passkeySwitchSettingRepo{value: "true"}, cfg)
+	sessions := &passkeyFinishLoginSessionStub{}
+	passkeys, err := service.NewPasskeyService(cfg, nil, sessions, nil)
+	require.NoError(t, err)
+	handler := NewPasskeyHandler(passkeys, nil, settings)
+	router := newProtectedLoginRouter(t)
+	router.POST("/api/v1/auth/passkey/login/finish", handler.FinishLogin)
+	const clientIP = "203.0.113.15"
+	const body = `{"session_token":"test-session","credential":{}}`
+
+	for range 3 {
+		result := protectedLoginRequest(router, "/api/v1/auth/passkey/login/finish", body, clientIP)
+		require.Equal(t, http.StatusBadRequest, result.Code)
+		require.Contains(t, result.Body.String(), "PASSKEY_SESSION_INVALID")
+	}
+	sessions.session = &service.PasskeySession{Kind: "login"}
+	for range 2 {
+		result := protectedLoginRequest(router, "/api/v1/auth/passkey/login/finish", body, clientIP)
+		require.Equal(t, http.StatusUnauthorized, result.Code)
+		require.Contains(t, result.Body.String(), "PASSKEY_VERIFICATION_FAILED")
+	}
+	third := protectedLoginRequest(router, "/api/v1/auth/passkey/login/finish", body, clientIP)
+	require.Equal(t, http.StatusForbidden, third.Code)
+	require.Contains(t, third.Body.String(), "LOGIN_IP_BANNED")
 }
