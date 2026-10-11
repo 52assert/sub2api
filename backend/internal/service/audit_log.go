@@ -32,6 +32,9 @@ const (
 const (
 	AuditActionLogin                  = "auth.login"
 	AuditActionLogin2FA               = "auth.login.2fa"
+	AuditActionLoginIPBan             = "auth.login.ip_ban"
+	AuditActionLoginIPBlocked         = "auth.login.ip_blocked"
+	AuditActionLoginIPUnban           = "admin.login_ip.unban"
 	AuditActionRegister               = "auth.register"
 	AuditActionTokenRefresh           = "auth.token.refresh"
 	AuditActionSessionBindingMismatch = "auth.session_binding.mismatch"

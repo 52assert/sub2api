@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -300,20 +301,37 @@ func (s *PasskeyService) FinishLogin(
 		return nil, ErrPasskeySession
 	}
 
+	// WebAuthn wraps lookup errors as verification errors. Preserve storage
+	// failures so login protection does not count a database outage as a bad
+	// credential and ban legitimate clients.
+	var lookupFailure error
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		record, lookupErr := s.repo.GetByCredentialID(ctx, rawID)
+		if lookupErr != nil && !errors.Is(lookupErr, ErrPasskeyNotFound) {
+			lookupFailure = lookupErr
+		}
 		if lookupErr != nil || record == nil || !bytes.Equal(record.UserHandle, userHandle) {
 			return nil, ErrPasskeyVerify
 		}
 		account, lookupErr := s.userRepo.GetByID(ctx, record.UserID)
+		if lookupErr != nil && !errors.Is(lookupErr, ErrUserNotFound) {
+			lookupFailure = lookupErr
+		}
 		if lookupErr != nil || account == nil || !account.IsActive() {
 			return nil, ErrPasskeyVerify
 		}
-		return s.loadWebAuthnUser(ctx, account, record.UserHandle)
+		user, loadErr := s.loadWebAuthnUser(ctx, account, record.UserHandle)
+		if loadErr != nil {
+			lookupFailure = loadErr
+		}
+		return user, loadErr
 	}
 
 	validatedUser, credential, err := s.webAuthn.FinishPasskeyLogin(handler, session.WebAuthn, request)
 	if err != nil {
+		if lookupFailure != nil {
+			return nil, ErrServiceUnavailable.WithCause(lookupFailure)
+		}
 		return nil, ErrPasskeyVerify
 	}
 	waUser, ok := validatedUser.(*passkeyUser)

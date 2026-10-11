@@ -248,6 +248,8 @@ export default {
     loginFailed: '登录失败，请检查您的凭据后重试。',
     errors: {
       USER_NOT_ACTIVE: '账号已被禁用',
+      LOGIN_IP_BANNED: '当前 IP 因累计 3 次登录失败已被永久封禁，请联系管理员解除封禁。',
+      LOGIN_PROTECTION_UNAVAILABLE: '登录安全服务暂时不可用，请稍后重试。',
     },
     registrationFailed: '注册失败，请重试。',
     emailDomainRegistrationLimit:

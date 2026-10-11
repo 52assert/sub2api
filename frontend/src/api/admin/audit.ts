@@ -47,6 +47,40 @@ export interface AuditLogQuery {
 
 export type AuditLogListResponse = PaginatedResponse<AuditLog>
 
+export interface LoginIPBan {
+  client_ip: string
+  failure_count: number
+  blocked_at: string
+  blocked_until?: string | null
+}
+
+export interface LoginIPBanListResponse {
+  items: LoginIPBan[]
+  total: number
+  page: number
+  page_size: number
+  threshold: number
+  failure_window_seconds: number
+  ban_duration_seconds: number
+}
+
+export interface LoginIPBanQuery {
+  page?: number
+  page_size?: number
+}
+
+/** List active login IP bans and the current failure policy. */
+export async function listIPBans(params: LoginIPBanQuery = {}): Promise<LoginIPBanListResponse> {
+  const { data } = await apiClient.get('/admin/audit-logs/ip-bans', { params })
+  return data
+}
+
+/** Remove an IP ban and reset its failed login counter. */
+export async function unbanIP(clientIP: string): Promise<{ client_ip: string }> {
+  const { data } = await apiClient.post('/admin/audit-logs/ip-bans/unban', { client_ip: clientIP })
+  return data
+}
+
 /**
  * List audit logs (paginated, filterable).
  */
@@ -76,7 +110,9 @@ export async function clear(totpCode: string): Promise<{ deleted: number }> {
 export const auditAPI = {
   list,
   get,
-  clear
+  clear,
+  listIPBans,
+  unbanIP
 }
 
 export default auditAPI

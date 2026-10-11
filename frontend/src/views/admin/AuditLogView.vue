@@ -1,6 +1,10 @@
 <template>
   <AppLayout>
     <TablePageLayout>
+      <template #actions>
+        <LoginIPBans />
+      </template>
+
       <!-- Filters -->
       <template #filters>
         <div class="card p-4 sm:p-6">
@@ -364,6 +368,7 @@ import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import LoginIPBans from '@/components/admin/audit/LoginIPBans.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useAppStore } from '@/stores'
 

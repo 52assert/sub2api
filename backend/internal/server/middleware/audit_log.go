@@ -58,6 +58,7 @@ var auditExtraAllowedKeys = map[string]struct{}{
 	"http_status": {}, "latency_ms": {}, "token_applied": {}, "retryable": {},
 	"event_id": {}, "requested_count": {}, "deleted_events": {}, "deleted_jobs": {},
 	"matched_count": {}, "snapshot_max_id": {}, "filter_hash": {}, "confirm": {},
+	"failure_count": {}, "blocked_ip": {}, "unblocked_ip": {},
 }
 
 // SetAuditExtra adds allowlisted, scalar details to the current audit entry.
@@ -181,11 +182,6 @@ func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddle
 				action = v
 			}
 		}
-		if !record {
-			c.Next()
-			return
-		}
-
 		// 捕获请求体（读出后回填，避免影响后续 ShouldBindJSON）。
 		// 只读取脱敏解析上限内的字节，超出部分与已读部分拼接回填，
 		// 避免大体积导入请求被完整复制进内存两次。
@@ -206,6 +202,11 @@ func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddle
 
 		start := time.Now()
 		c.Next()
+		// OAuth starts and callbacks use GET. Preserve IP-ban rejections even
+		// when that read is not normally included in the audit log.
+		if !record && c.GetString(auditCtxKeyAction) != service.AuditActionLoginIPBlocked {
+			return
+		}
 
 		if c.GetBool(auditCtxKeySkip) {
 			return
