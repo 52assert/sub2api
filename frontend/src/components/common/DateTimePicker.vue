@@ -36,12 +36,13 @@
         role="dialog"
         :aria-label="t('dateTimePicker.selectDateTime')"
         aria-modal="false"
-        class="fixed z-[70] overflow-y-auto overscroll-contain rounded-2xl border border-gray-200 bg-white p-4 shadow-xl shadow-gray-900/15 dark:border-dark-600 dark:bg-dark-800 dark:shadow-black/30"
+        class="fixed z-[70] flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl shadow-gray-900/15 dark:border-dark-600 dark:bg-dark-800 dark:shadow-black/30"
         :style="panelStyle"
         data-testid="datetime-picker-panel"
         @click.stop
         @keydown.tab="trapTab"
       >
+        <div class="min-h-0 overflow-y-auto overscroll-contain p-4" data-testid="datetime-picker-content">
         <div class="mb-4 flex items-center justify-between gap-2">
           <button type="button" :class="navigationClass" :aria-label="navigationLabel(-1)" :disabled="!canNavigate(-1)" data-testid="datetime-picker-prev" @click="navigate(-1)">
             <Icon name="chevronLeft" size="sm" />
@@ -133,7 +134,14 @@
           </div>
         </div>
 
-        <div class="mt-4 flex items-center justify-between gap-2 border-t border-gray-100 pt-3 dark:border-dark-700">
+        <div class="mt-4 rounded-lg bg-primary-50/70 px-3 py-2.5 dark:bg-primary-500/10" data-testid="datetime-picker-draft" aria-live="polite">
+          <p class="text-[11px] font-medium text-primary-600 dark:text-primary-400">{{ t('dateTimePicker.selectedDateTime') }}</p>
+          <time :datetime="formatLocal(draftDate)" class="mt-1 block text-sm font-semibold tabular-nums text-gray-900 dark:text-gray-100">{{ formatDateTime(draftDate) }}</time>
+        </div>
+        <p v-if="validationMessage" role="alert" class="mt-2 text-xs leading-5 text-red-600 dark:text-red-400" data-testid="datetime-picker-validation">{{ validationMessage }}</p>
+        </div>
+
+        <div class="flex shrink-0 items-center justify-between gap-2 border-t border-gray-100 bg-white px-4 py-3 dark:border-dark-700 dark:bg-dark-800" data-testid="datetime-picker-footer">
           <button type="button" class="rounded-lg px-2 py-2 text-xs font-medium text-primary-600 transition hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-40 dark:text-primary-400 dark:hover:bg-primary-500/10" :disabled="!dayAvailable(today)" data-testid="datetime-picker-today" @click="selectDay(today)">{{ t('dateTimePicker.today') }}</button>
           <div class="flex gap-2">
             <button type="button" class="btn btn-secondary btn-sm" data-testid="datetime-picker-cancel" @click="closePicker">{{ t('dateTimePicker.cancel') }}</button>
@@ -176,6 +184,7 @@ const pad = (value: number) => String(value).padStart(2, '0')
 const dateKey = (date: Date) => `${String(date.getFullYear()).padStart(4, '0')}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 const formatTime = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`
 const formatDate = (date: Date) => new Intl.DateTimeFormat(locale.value, { year: 'numeric', month: 'short', day: '2-digit' }).format(date)
+const formatDateTime = (date: Date) => `${formatDate(date)} ${formatTime(date)}`
 const formatAccessibleDate = (date: Date) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'full' }).format(date)
 
 function parseLocal(value: string): Date | null {
@@ -193,6 +202,12 @@ const committedDate = computed(() => parseLocal(props.modelValue))
 const minimum = computed(() => parseLocal(props.min)?.getTime() ?? -Infinity)
 const maximum = computed(() => parseLocal(props.max)?.getTime() ?? Infinity)
 const canConfirm = computed(() => !props.disabled && withinBounds(draftDate.value.getTime()))
+const validationMessage = computed(() => {
+  const timestamp = draftDate.value.getTime()
+  if (timestamp < minimum.value) return t('dateTimePicker.beforeMinimum', { time: formatDateTime(new Date(minimum.value)) })
+  if (timestamp > maximum.value) return t('dateTimePicker.afterMaximum', { time: formatDateTime(new Date(maximum.value)) })
+  return ''
+})
 const triggerLabel = computed(() => committedDate.value ? `${t('dateTimePicker.selectDateTime')}: ${formatDate(committedDate.value)} ${formatTime(committedDate.value)}` : t('dateTimePicker.selectDateTime'))
 const monthNames = computed(() => Array.from({ length: 12 }, (_, month) => new Intl.DateTimeFormat(locale.value, { month: 'long' }).format(new Date(2026, month, 1))))
 const weekdayNames = computed(() => Array.from({ length: 7 }, (_, day) => new Intl.DateTimeFormat(locale.value, { weekday: 'short' }).format(new Date(2026, 0, 5 + day))))
@@ -242,8 +257,24 @@ function showYears() {
   yearPageStart.value = Math.floor(viewYear.value / 12) * 12
   calendarView.value = calendarView.value === 'years' ? 'days' : 'years'
 }
-function chooseMonth(month: number) { viewMonth.value = month; calendarView.value = 'days' }
-function chooseYear(year: number) { viewYear.value = year; calendarView.value = 'months' }
+function selectYearMonth(year: number, month: number) {
+  const lastDay = new Date(year, month + 1, 0).getDate()
+  const next = new Date(draftDate.value)
+  next.setFullYear(year, month, Math.min(next.getDate(), lastDay))
+  draftDate.value = next
+  viewYear.value = year; viewMonth.value = month
+  timeMenu.value = null
+}
+function chooseMonth(month: number) {
+  if (!monthAvailable(viewYear.value, month)) return
+  selectYearMonth(viewYear.value, month)
+  calendarView.value = 'days'
+}
+function chooseYear(year: number) {
+  if (!yearAvailable(year)) return
+  selectYearMonth(year, viewMonth.value)
+  calendarView.value = 'months'
+}
 function navigationLabel(direction: number): string {
   if (calendarView.value === 'years') return `${t('dateTimePicker.selectYear')} ${yearPageStart.value + direction * 12}`
   return t(direction < 0 ? 'dateTimePicker.previousMonth' : 'dateTimePicker.nextMonth')
@@ -327,7 +358,10 @@ function updatePosition() {
   if (!isOpen.value || !rect) return
   if (rect.bottom < 0 || rect.top > window.innerHeight) { closePicker(); return }
   const position = getFloatingPanelPosition(rect, window.innerWidth, window.innerHeight, { viewportPadding: 12, maxWidth: 360, maxHeightRatio: 0.94, minComfortableHeight: 470, mobileBreakpoint: 640 })
-  panelStyle.value = { left: `${position.left}px`, width: `${position.width}px`, maxHeight: `${position.maxHeight}px`, ...(position.top === null ? { bottom: `${position.bottom}px` } : { top: `${position.top}px` }) }
+  const vertical: Record<string, string> = window.innerWidth < 640
+    ? { top: '12px', maxHeight: `${window.innerHeight - 24}px` }
+    : { maxHeight: `${position.maxHeight}px`, ...(position.top === null ? { bottom: `${position.bottom}px` } : { top: `${position.top}px` }) }
+  panelStyle.value = { left: `${position.left}px`, width: `${position.width}px`, ...vertical }
 }
 
 async function openPicker() {
