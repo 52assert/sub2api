@@ -248,6 +248,8 @@ export default {
     loginFailed: 'Login failed. Please check your credentials and try again.',
     errors: {
       USER_NOT_ACTIVE: 'Account has been disabled.',
+      LOGIN_IP_BANNED: 'This IP has been permanently banned after 3 failed login attempts. Contact an administrator to unblock it.',
+      LOGIN_PROTECTION_UNAVAILABLE: 'Login protection is temporarily unavailable. Please try again later.',
     },
     registrationFailed: 'Registration failed. Please try again.',
     emailDomainRegistrationLimit:

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -135,6 +136,7 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 			TokenType:   "Bearer",
 			User:        dto.UserFromService(user),
 		})
+		middleware2.MarkLoginSuccess(c)
 		return
 	}
 	response.Success(c, AuthResponse{
@@ -144,6 +146,7 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 		TokenType:    "Bearer",
 		User:         dto.UserFromService(user),
 	})
+	middleware2.MarkLoginSuccess(c)
 }
 
 func (h *AuthHandler) ensureBackendModeAllowsUser(ctx context.Context, user *service.User) error {
@@ -251,6 +254,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	token, user, err := h.authService.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCredentials) && middleware2.RecordLoginFailure(c, err) {
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -332,6 +338,9 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		slog.Debug("login_2fa_verify_failed",
 			"user_id", session.UserID,
 			"error", err)
+		if errors.Is(err, service.ErrTotpInvalidCode) && middleware2.RecordLoginFailure(c, err) {
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}

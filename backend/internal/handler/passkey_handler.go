@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -111,6 +112,9 @@ func (h *PasskeyHandler) FinishLogin(c *gin.Context) {
 	credentialRequest := cloneRequestWithJSON(c.Request, req.Credential)
 	user, err := h.passkeys.FinishLogin(c.Request.Context(), req.SessionToken, credentialRequest)
 	if err != nil {
+		if errors.Is(err, service.ErrPasskeyVerify) && middleware2.RecordLoginFailure(c, err) {
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}

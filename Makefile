@@ -2,6 +2,7 @@
 
 FRONTEND_CRITICAL_VITEST := \
 	src/i18n/__tests__/localeKeyCompleteness.spec.ts \
+	src/components/admin/audit/__tests__/LoginIPBans.spec.ts \
 	src/components/common/__tests__/DateTimePicker.spec.ts \
 	src/components/account/__tests__/AccountTestModal.spec.ts \
 	src/components/admin/account/__tests__/AccountTestModal.spec.ts \

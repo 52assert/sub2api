@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -1618,6 +1619,7 @@ func writeOAuthTokenPairResponse(c *gin.Context, tokenPair *service.TokenPair) {
 		"expires_in":    tokenPair.ExpiresIn,
 		"token_type":    "Bearer",
 	})
+	middleware2.MarkLoginSuccess(c)
 }
 
 func (h *AuthHandler) bindPendingOAuthLogin(c *gin.Context, provider string) {
@@ -1639,6 +1641,9 @@ func (h *AuthHandler) bindPendingOAuthLogin(c *gin.Context, provider string) {
 
 	user, err := h.authService.ValidatePasswordCredentials(c.Request.Context(), strings.TrimSpace(req.Email), req.Password)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCredentials) && middleware2.RecordLoginFailure(c, err) {
+			return
+		}
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -2059,6 +2064,7 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 		payload["refresh_token"] = tokenPair.RefreshToken
 		payload["expires_in"] = tokenPair.ExpiresIn
 		payload["token_type"] = "Bearer"
+		middleware2.MarkLoginSuccess(c)
 	}
 
 	clearCookies()

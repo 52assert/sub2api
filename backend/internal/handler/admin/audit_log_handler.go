@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -16,16 +17,54 @@ import (
 // AuditLogHandler 操作审计日志管理接口。
 // 审计日志仅管理员可见；不提供单条删除，仅支持带 TOTP 验证的全量清空。
 type AuditLogHandler struct {
-	auditService *service.AuditLogService
-	totpService  *service.TotpService
+	auditService    *service.AuditLogService
+	totpService     *service.TotpService
+	loginProtection *service.LoginProtectionService
 }
 
 // NewAuditLogHandler 创建审计日志处理器。
-func NewAuditLogHandler(auditService *service.AuditLogService, totpService *service.TotpService) *AuditLogHandler {
+func NewAuditLogHandler(auditService *service.AuditLogService, totpService *service.TotpService, loginProtection *service.LoginProtectionService) *AuditLogHandler {
 	return &AuditLogHandler{
-		auditService: auditService,
-		totpService:  totpService,
+		auditService:    auditService,
+		totpService:     totpService,
+		loginProtection: loginProtection,
 	}
+}
+
+// ListIPBans lists permanent login bans independently of audit log retention.
+func (h *AuditLogHandler) ListIPBans(c *gin.Context) {
+	page, pageSize := response.ParsePagination(c)
+	result, err := h.loginProtection.ListBans(c.Request.Context(), page, pageSize)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+// UnbanIP clears both the ban and its failure counter; the admin audit
+// middleware records the operator and the normalized target IP.
+func (h *AuditLogHandler) UnbanIP(c *gin.Context) {
+	var req struct {
+		ClientIP string `json:"client_ip" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "client_ip is required")
+		return
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(req.ClientIP))
+	if err != nil || addr.Zone() != "" {
+		response.BadRequest(c, "Invalid client_ip")
+		return
+	}
+	clientIP := addr.Unmap().String()
+	if err := h.loginProtection.Unban(c.Request.Context(), clientIP); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	middleware.SetAuditAction(c, service.AuditActionLoginIPUnban)
+	middleware.SetAuditExtra(c, map[string]any{"unblocked_ip": clientIP})
+	response.Success(c, gin.H{"client_ip": clientIP})
 }
 
 // List 分页查询审计日志。

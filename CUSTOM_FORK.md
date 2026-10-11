@@ -103,6 +103,14 @@ make test-frontend
 pnpm --dir frontend run build
 ```
 
+## 登录失败 IP 封禁
+
+同一客户端 IP 在从首次失败开始的 24 小时窗口内累计登录失败 **3 次**，立即永久封禁登录，需管理员在「操作日志 → 登录 IP 封禁」手动解封。密码、TOTP 二次验证、Passkey 和 OAuth 绑定登录共用计数；完整登录成功清零，等待二次验证、验证码错误、临时会话过期及服务故障不清零也不累计。封禁同时拦截 OAuth 入口和回调，登出仍可用。
+
+封禁和失败计数通过 Redis 原子操作共享；永久封禁无过期时间，独立于审计日志，清空或自动清理日志不会解封。解封同时清除失败计数，并记录操作者及目标 IP。部署需保留 Redis 持久卷及 AOF；Redis 不可用时认证入口返回 503。
+
+IP 解析与现有审计、会话绑定共用配置。反向代理须覆盖客户端可伪造的转发头；直接暴露后端时使用 `security.trust_forwarded_ip_for_api_key_acl=false` 并正确设置 `server.trusted_proxies`，避免通过伪造转发头绕过封禁。
+
 ## 降智测试的原生 Codex CLI
 
 账号管理 → 更多 → **降智测试**，仅使用 **Codex CLI**。原生 CLI 支持 OpenAI OAuth 和使用 Responses 协议的 API Key 账号，沿用所选账号的凭据、模型映射、代理以及选定的思考等级。Agent Identity 等不兼容认证会明确拒绝。OpenAI 文本连接测试也使用同一 CLI 执行器，限时两分钟，默认发送 `hi` 并展示模型实际回答；图片测试和 Compact 探测沿用各自的专用接口。

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -34,6 +36,7 @@ func newAuthRoutesTestRouter(redisClient *redis.Client) *gin.Engine {
 		redisClient,
 		nil,
 		nil,
+		service.NewLoginProtectionService(repository.NewLoginProtectionCache(redisClient)),
 	)
 
 	return router
@@ -67,7 +70,7 @@ func TestAuthRoutesRateLimitFailCloseWhenRedisUnavailable(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		require.Equal(t, http.StatusTooManyRequests, w.Code, "path=%s", path)
-		require.Contains(t, w.Body.String(), "rate limit exceeded", "path=%s", path)
+		require.Equal(t, http.StatusServiceUnavailable, w.Code, "path=%s", path)
+		require.Contains(t, w.Body.String(), "LOGIN_PROTECTION_UNAVAILABLE", "path=%s", path)
 	}
 }

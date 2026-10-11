@@ -153,6 +153,8 @@ func registerAuditLogRoutes(admin *gin.RouterGroup, h *handler.Handlers, _ middl
 	auditLogs := admin.Group("/audit-logs")
 	{
 		auditLogs.GET("", h.Admin.AuditLog.List)
+		auditLogs.GET("/ip-bans", h.Admin.AuditLog.ListIPBans)
+		auditLogs.POST("/ip-bans/unban", h.Admin.AuditLog.UnbanIP)
 		auditLogs.GET("/:id", h.Admin.AuditLog.Get)
 		// 清空需现场 TOTP 校验（在 handler 内强制），不复用 step-up sudo 窗口
 		auditLogs.POST("/clear", h.Admin.AuditLog.Clear)
