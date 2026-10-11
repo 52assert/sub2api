@@ -47,10 +47,7 @@ var (
 )
 
 func (s *AccountTestService) ValidateIntelligenceTestRunner(ctx context.Context, account *Account, model, effort, runner string) error {
-	if runner == "" || runner == IntelligenceTestRunnerHTTP {
-		return s.ValidateIntelligenceTest(account, model, effort)
-	}
-	if runner != IntelligenceTestRunnerCodex {
+	if strings.TrimSpace(runner) != "" && strings.TrimSpace(runner) != IntelligenceTestRunnerCodex {
 		return infraerrors.BadRequest("INVALID_TEST_RUNNER", "Select a valid test runner.")
 	}
 	if err := s.ValidateIntelligenceTest(account, model, effort); err != nil {
@@ -81,7 +78,7 @@ func (s *AccountTestService) intelligenceCLICredentialAccount(ctx context.Contex
 		return nil, errors.New("无法读取所选账号的凭据")
 	}
 	if credential.IsOpenAIAgentIdentity() || credential.IsOpenAIPersonalAccessToken() || credential.Type == AccountTypeSetupToken {
-		return nil, errors.New("该账号认证方式暂不支持原生 Codex CLI 测试，请使用 HTTP 测试")
+		return nil, errors.New("该账号认证方式暂不支持原生 Codex CLI 测试")
 	}
 	if credential.Type != AccountTypeOAuth && credential.Type != AccountTypeAPIKey {
 		return nil, errors.New("codex CLI 测试仅支持 OAuth 或 API Key 账号")
@@ -180,11 +177,7 @@ func (s *AccountTestService) intelligenceCLIVersion(ctx context.Context) (string
 }
 
 func (s *AccountTestService) RunIntelligenceTestDetailed(ctx context.Context, accountID int64, model, prompt, effort, runner string) (IntelligenceTestGenerationResult, error) {
-	if runner == "" || runner == IntelligenceTestRunnerHTTP {
-		output, err := s.RunIntelligenceTest(ctx, accountID, model, prompt, effort)
-		return IntelligenceTestGenerationResult{Output: output}, err
-	}
-	if runner != IntelligenceTestRunnerCodex {
+	if strings.TrimSpace(runner) != "" && strings.TrimSpace(runner) != IntelligenceTestRunnerCodex {
 		return IntelligenceTestGenerationResult{}, errors.New("invalid intelligence test runner")
 	}
 	return s.runCodexCLIIntelligenceTest(ctx, accountID, model, prompt, effort)

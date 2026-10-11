@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -151,13 +150,6 @@ func intelligenceModelMetadata(account *Account, selected, mapped string) (Upstr
 	return account.GetUpstreamModelMetadata(selected)
 }
 
-func intelligenceOutputTokenBudget(account *Account, selected string) int {
-	if metadata, ok := intelligenceModelMetadata(account, selected, account.GetMappedModel(selected)); ok && metadata.MaxOutputTokens > 0 && metadata.MaxOutputTokens < intelligenceMaxTokens {
-		return int(metadata.MaxOutputTokens)
-	}
-	return intelligenceMaxTokens
-}
-
 func intelligenceMediaModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return isOpenAIImageModel(model) || isImageGenerationModel(model) || isGrokImageGenerationModel(model) || isGrokVideoGenerationModel(model) ||
@@ -261,112 +253,16 @@ func validateIntelligenceEffort(protocol, model, effort string) error {
 	return nil
 }
 
-// RunIntelligenceTest reuses account connectivity routing, authentication,
-// proxies and model mappings, but opts into generation budgets and strict
-// completion checks. It retains only final text, with a bounded in-memory sink.
+// RunIntelligenceTest runs the native Codex CLI with the selected account.
 func (s *AccountTestService) RunIntelligenceTest(ctx context.Context, accountID int64, model, prompt, reasoningEffort string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	parentContext := ctx
-	if strings.TrimSpace(prompt) == "" {
-		return "", errors.New("请输入测试提示词")
-	}
-	if len(prompt) > 64<<10 {
-		return "", errors.New("测试提示词不能超过 64 KiB")
-	}
 	if s == nil || s.accountRepo == nil {
 		return "", errors.New("Account test service is unavailable")
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
-	if err != nil {
-		return "", err
-	}
-	if err := s.ValidateIntelligenceTest(account, model, reasoningEffort); err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
-	if effort == "default" {
-		effort = ""
-	}
-	ctx = context.WithValue(ctx, accountIntelligenceContextKey{}, &accountIntelligenceRequest{prompt: prompt, effort: effort, maxTokens: intelligenceOutputTokenBudget(account, strings.TrimSpace(model))})
-	ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileLongStream)
-	writer := &intelligenceCaptureWriter{header: make(http.Header), cancel: cancel}
-	c, _ := gin.CreateTestContext(writer)
-	c.Request = httptest.NewRequest(http.MethodPost, "/internal/intelligence-test", nil).WithContext(ctx)
-	err = s.TestAccountConnection(c, accountID, strings.TrimSpace(model), prompt, AccountTestModeDefault)
-	if err := parentContext.Err(); err != nil {
-		return "", err
-	}
-	if writer.err != nil {
-		return "", writer.err
-	}
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if !writer.complete {
-		return "", errors.New("测试响应未完整结束")
-	}
-	if strings.TrimSpace(writer.output.String()) == "" {
-		return "", errors.New("模型未返回可展示的内容")
-	}
-	return writer.output.String(), nil
-}
-
-type intelligenceCaptureWriter struct {
-	header   http.Header
-	output   strings.Builder
-	complete bool
-	err      error
-	cancel   context.CancelFunc
-}
-
-func (w *intelligenceCaptureWriter) Header() http.Header { return w.header }
-func (w *intelligenceCaptureWriter) WriteHeader(int)     {}
-func (w *intelligenceCaptureWriter) Flush()              {}
-func (w *intelligenceCaptureWriter) Write(data []byte) (int, error) {
-	if w.err != nil {
-		return 0, w.err
-	}
-	if len(data) > intelligenceMaxOutputBytes*6 {
-		w.fail(errors.New("测试输出超过 2 MiB 限制"))
-		return 0, w.err
-	}
-	var event TestEvent
-	encoded := bytes.TrimSpace(data)
-	encoded = bytes.TrimSpace(bytes.TrimPrefix(encoded, []byte("data:")))
-	if err := json.Unmarshal(encoded, &event); err != nil {
-		w.fail(fmt.Errorf("读取测试结果失败: %w", err))
-		return 0, w.err
-	}
-	switch event.Type {
-	case "content":
-		if w.output.Len()+len(event.Text) > intelligenceMaxOutputBytes {
-			w.fail(errors.New("测试输出超过 2 MiB 限制"))
-			return 0, w.err
-		}
-		_, _ = w.output.WriteString(event.Text)
-	case "error":
-		message := event.Error
-		if len(message) > 16<<10 {
-			message = message[:16<<10]
-		}
-		w.fail(errors.New(message))
-	case "test_complete":
-		w.complete = event.Success
-	}
-	return len(data), nil
-}
-func (w *intelligenceCaptureWriter) fail(err error) {
-	w.err = err
-	if w.cancel != nil {
-		w.cancel()
-	}
+	result, err := s.RunIntelligenceTestDetailed(ctx, accountID, model, prompt, reasoningEffort, IntelligenceTestRunnerCodex)
+	return result.Output, err
 }
 
 func applyIntelligencePayload(ctx context.Context, protocol, model string, payload map[string]any, isOAuth bool) error {

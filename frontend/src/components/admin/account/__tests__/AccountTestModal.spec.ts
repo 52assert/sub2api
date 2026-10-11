@@ -219,5 +219,39 @@ describe('AccountTestModal', () => {
       prompt: '',
       mode: 'compact'
     })
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.cliTestHint')
+    wrapper.unmount()
+  })
+
+  it('OpenAI 默认文本连接测试展示 Codex CLI 并提交默认模式', async () => {
+    getAvailableModels.mockResolvedValue([{ id: 'gpt-5.4', display_name: 'GPT-5.4' }])
+    global.fetch = vi.fn().mockResolvedValue(createStreamResponse([
+      'data: {"type":"status","text":"Codex CLI 0.160.0"}\n',
+      'data: {"type":"test_complete","success":true}\n'
+    ])) as any
+    const wrapper = mountModal({ id: 42, name: 'OpenAI OAuth', platform: 'openai', type: 'oauth', status: 'active' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.openai.cliTestHint')
+    await wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))!.trigger('click')
+    await flushPromises()
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toEqual({ model_id: 'gpt-5.4', prompt: '', mode: 'default' })
+    expect(wrapper.text()).toContain('Codex CLI 0.160.0')
+    wrapper.unmount()
+  })
+
+  it('OpenAI 图片连接测试保留图片提示词且不展示 CLI 提示', async () => {
+    getAvailableModels.mockResolvedValue([{ id: 'gpt-image-2', display_name: 'GPT Image 2' }])
+    const wrapper = mountModal({ id: 42, name: 'OpenAI OAuth', platform: 'openai', type: 'oauth', status: 'active' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.cliTestHint')
+    await wrapper.get('textarea.textarea-stub').setValue('draw a cat')
+    await wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))!.trigger('click')
+    await flushPromises()
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toEqual({ model_id: 'gpt-image-2', prompt: 'draw a cat', mode: 'default' })
+    wrapper.unmount()
   })
 })

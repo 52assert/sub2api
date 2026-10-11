@@ -7,14 +7,9 @@
       </div>
       <div class="space-y-1.5">
         <label id="intelligence-test-runner-label" class="input-label">{{ t('intelligenceTests.runner') }}</label>
-        <Select
-          v-model="runner"
-          :aria-label="t('intelligenceTests.runner')"
-          :options="runnerOptions"
-          :disabled="submitting || runnerOptions.length === 1"
-          data-testid="intelligence-test-runner"
-        />
-        <p v-if="runner === 'codex_cli'" class="text-xs text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.codexCliHint') }}</p>
+        <p class="text-sm text-gray-900 dark:text-gray-100" data-testid="intelligence-test-runner">{{ t('intelligenceTests.runners.codex_cli') }}</p>
+        <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('intelligenceTests.codexCliHint') }}</p>
+        <p v-if="!supportsCliTest" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ t('intelligenceTests.unsupportedAccount') }}</p>
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
         <div class="space-y-1.5">
@@ -71,7 +66,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import { createIntelligenceTest, DEFAULT_INTELLIGENCE_TEST_PROMPT, type IntelligenceTestEffort, type IntelligenceTestRecord, type IntelligenceTestRunner } from '@/api/intelligenceTests'
+import { createIntelligenceTest, DEFAULT_INTELLIGENCE_TEST_PROMPT, type IntelligenceTestEffort, type IntelligenceTestRecord } from '@/api/intelligenceTests'
 import { useAppStore } from '@/stores/app'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -85,7 +80,6 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const models = ref<ClaudeModel[]>([])
 const model = ref('')
-const runner = ref<IntelligenceTestRunner>('http')
 const reasoningEffort = ref<IntelligenceTestEffort>('default')
 const prompt = ref(DEFAULT_INTELLIGENCE_TEST_PROMPT)
 const loadingModels = ref(false)
@@ -95,16 +89,16 @@ const submitError = ref('')
 let modelRequest = 0
 
 const modelOptions = computed(() => models.value.map((item) => ({ value: item.id, label: item.display_name || item.id })))
-const runnerOptions = computed(() => (props.account?.platform === 'openai' ? ['codex_cli', 'http'] as const : ['http'] as const).map((value) => ({ value, label: t(`intelligenceTests.runners.${value}`) })))
+const supportsCliTest = computed(() => props.account?.platform === 'openai' && ['oauth', 'apikey'].includes(props.account.type))
 const effortOptions = computed(() => (['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((effort) => ({ value: effort, label: t(`intelligenceTests.efforts.${effort}`) })))
-const canSubmit = computed(() => !!props.account && !loadingModels.value && !submitting.value && models.value.some((item) => item.id === model.value) && !!prompt.value.trim())
+const canSubmit = computed(() => supportsCliTest.value && !loadingModels.value && !submitting.value && models.value.some((item) => item.id === model.value) && !!prompt.value.trim())
 
 function errorMessage(error: unknown, fallback: string): string {
   return error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : fallback
 }
 
 async function loadModels() {
-  if (!props.account) return
+  if (!props.account || !supportsCliTest.value) return
   const request = ++modelRequest
   const accountId = props.account.id
   loadingModels.value = true
@@ -129,7 +123,7 @@ async function submit() {
   submitting.value = true
   submitError.value = ''
   try {
-    const record = await createIntelligenceTest(props.account.id, { model: model.value, runner: runner.value, reasoning_effort: reasoningEffort.value, prompt: prompt.value.trim() })
+    const record = await createIntelligenceTest(props.account.id, { model: model.value, runner: 'codex_cli', reasoning_effort: reasoningEffort.value, prompt: prompt.value.trim() })
     appStore.showSuccess(t('intelligenceTests.submitted'), 6000)
     emit('created', record)
     emit('close')
@@ -143,7 +137,10 @@ async function submit() {
 watch([() => props.show, () => props.account?.id], ([show]) => {
   ++modelRequest
   if (!show) return
-  runner.value = props.account?.platform === 'openai' ? 'codex_cli' : 'http'
+  models.value = []
+  model.value = ''
+  modelError.value = ''
+  loadingModels.value = false
   reasoningEffort.value = 'default'
   prompt.value = DEFAULT_INTELLIGENCE_TEST_PROMPT
   submitError.value = ''

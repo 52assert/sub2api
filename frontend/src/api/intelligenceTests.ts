@@ -27,7 +27,7 @@ export interface IntelligenceTestRecord {
 
 export interface CreateIntelligenceTestRequest {
   model: string
-  runner?: IntelligenceTestRunner
+  runner?: 'codex_cli'
   reasoning_effort: IntelligenceTestEffort
   prompt: string
 }

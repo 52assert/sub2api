@@ -362,7 +362,8 @@ func TestIntelligenceCodexCLIValidationRejectsUnsupportedAccountOrMissingBinary(
 	}
 	svc.cfg.IntelligenceTest.CLIPath = filepath.Join(t.TempDir(), "missing-codex")
 	require.Error(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", IntelligenceTestRunnerCodex))
-	require.NoError(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", IntelligenceTestRunnerHTTP))
+	require.Error(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", IntelligenceTestRunnerHTTP))
+	require.Error(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", ""))
 }
 
 func TestIntelligenceCodexCLIDoesNotBypassMissingGuard(t *testing.T) {
@@ -395,4 +396,33 @@ func TestIntelligenceCodexCLIInstallationIDStableAndPrivate(t *testing.T) {
 	_, err := uuid.Parse(a)
 	require.NoError(t, err)
 	require.NotContains(t, a, "secret")
+}
+
+func TestIntelligenceCodexCLIDefaultRunnerAndLegacyEntryUseCLI(t *testing.T) {
+	account := &Account{ID: 24, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key"}}
+	for _, runner := range []string{"", "  "} {
+		t.Run(runner, func(t *testing.T) {
+			svc, fixture := intelligenceCLITestService(t, account, intelligenceCLISuccessScript)
+			require.NoError(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", runner))
+			result, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-5.4", "animation", "default", runner)
+			require.NoError(t, err)
+			require.Equal(t, "0.160.0", result.RunnerVersion)
+			_, err = os.Stat(filepath.Join(fixture, "args"))
+			require.NoError(t, err)
+		})
+	}
+	svc, _ := intelligenceCLITestService(t, account, intelligenceCLISuccessScript)
+	output, err := svc.RunIntelligenceTest(context.Background(), account.ID, "gpt-5.4", "animation", "default")
+	require.NoError(t, err)
+	require.Contains(t, output, "<svg>")
+}
+
+func TestIntelligenceCodexCLIRejectsHTTPBeforeRunningAnyCommand(t *testing.T) {
+	account := &Account{ID: 25, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key"}}
+	svc, fixture := intelligenceCLITestService(t, account, intelligenceCLISuccessScript)
+	require.Error(t, svc.ValidateIntelligenceTestRunner(context.Background(), account, "gpt-5.4", "default", IntelligenceTestRunnerHTTP))
+	_, err := svc.RunIntelligenceTestDetailed(context.Background(), account.ID, "gpt-5.4", "animation", "default", IntelligenceTestRunnerHTTP)
+	require.ErrorContains(t, err, "invalid intelligence test runner")
+	_, err = os.Stat(filepath.Join(fixture, "args"))
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

@@ -79,6 +79,7 @@
           :options="openAITestModeOptions"
           :disabled="status === 'connecting'"
         />
+        <p v-if="isOpenAICliTest" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.cliTestHint') }}</p>
       </div>
 
       <div v-if="supportsPromptInput" class="space-y-1.5">
@@ -183,7 +184,7 @@
           </div>
           <div v-else-if="status === 'connecting'" class="flex items-center gap-2 text-yellow-400">
             <Icon name="refresh" size="sm" class="animate-spin" :stroke-width="2" />
-            <span>{{ t('admin.accounts.connectingToApi') }}</span>
+            <span>{{ t(isOpenAICliTest ? 'admin.accounts.openai.runningCliTest' : 'admin.accounts.connectingToApi') }}</span>
           </div>
 
           <!-- Output Lines -->
@@ -425,7 +426,7 @@ const audioFileInput = ref<HTMLInputElement | null>(null)
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const isGrokAccount = computed(() => props.account?.platform === 'grok')
 const openAITestModeOptions = computed(() => [
-  { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
+  { value: 'default', label: t(supportsOpenAIImageTest.value ? 'admin.accounts.imageTestMode' : 'admin.accounts.openai.testModeDefault') },
   { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
 ])
 const grokTestModeOptions = computed(() => [
@@ -450,6 +451,7 @@ const supportsOpenAIImageTest = computed(() => {
   if (!modelID.startsWith('gpt-image-')) return false
   return props.account?.platform === 'openai'
 })
+const isOpenAICliTest = computed(() => isOpenAIAccount.value && !supportsOpenAIImageTest.value && testMode.value === 'default')
 
 const isGrokImageModel = (id: string) => {
   const modelID = id.toLowerCase()
@@ -670,6 +672,7 @@ const testModeSummary = computed(() => {
     }
   }
   if (supportsImageTest.value) return t('admin.accounts.imageTestMode')
+  if (isOpenAICliTest.value) return t('admin.accounts.openai.testModeDefault')
   return t('admin.accounts.testPrompt')
 })
 

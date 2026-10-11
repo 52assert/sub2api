@@ -7,6 +7,7 @@ export default {
     runner: '执行方式',
     runners: { http: 'HTTP 请求', codex_cli: 'Codex CLI' },
     codexCliHint: 'Codex CLI 执行真实客户端，沿用所选账号。',
+    unsupportedAccount: '降智测试仅支持 OpenAI OAuth 或 Responses API Key 账号。',
     runnerVersion: 'CLI 版本',
     effectiveModel: '实际模型',
     artifactName: '产物文件',

@@ -42,11 +42,20 @@ func (intelligenceHandlerAccounts) GetByID(context.Context, int64) (*service.Acc
 	return &service.Account{ID: 42, Name: "测试来源账号", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "private-secret"}}, nil
 }
 
+type intelligenceHandlerGenerator struct{}
+
+func (intelligenceHandlerGenerator) ValidateIntelligenceTestRunner(context.Context, *service.Account, string, string, string) error {
+	return nil
+}
+func (intelligenceHandlerGenerator) RunIntelligenceTestDetailed(context.Context, int64, string, string, string, string) (service.IntelligenceTestGenerationResult, error) {
+	return service.IntelligenceTestGenerationResult{}, nil
+}
+
 func TestIntelligenceTestHandlerAcceptsBackgroundTaskAndSharesResults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := &intelligenceHandlerRepo{}
 	accounts := intelligenceHandlerAccounts{}
-	generator := service.NewAccountTestService(accounts, nil, nil, nil, nil, nil, nil, nil)
+	generator := intelligenceHandlerGenerator{}
 	svc := service.NewIntelligenceTestService(repo, accounts, generator)
 	t.Cleanup(svc.Stop)
 	h := NewIntelligenceTestHandler(svc)
@@ -60,6 +69,7 @@ func TestIntelligenceTestHandlerAcceptsBackgroundTaskAndSharesResults(t *testing
 	router.ServeHTTP(response, request)
 	require.Equal(t, http.StatusAccepted, response.Code)
 	require.Equal(t, "queued", repo.record.Status)
+	require.Equal(t, service.IntelligenceTestRunnerCodex, repo.record.Runner)
 	require.Equal(t, service.DefaultIntelligenceTestPrompt, repo.record.Prompt)
 	require.Equal(t, "测试来源账号", repo.record.AccountName)
 	require.Contains(t, response.Body.String(), `"account_name":"测试来源账号"`)
@@ -76,4 +86,19 @@ func TestIntelligenceTestHandlerAcceptsBackgroundTaskAndSharesResults(t *testing
 		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 		require.Zero(t, envelope.Code)
 	}
+}
+
+func TestIntelligenceTestHandlerRejectsHTTPRunner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &intelligenceHandlerRepo{}
+	svc := service.NewIntelligenceTestService(repo, intelligenceHandlerAccounts{}, intelligenceHandlerGenerator{})
+	t.Cleanup(svc.Stop)
+	router := gin.New()
+	router.POST("/admin/accounts/:id/intelligence-tests", NewIntelligenceTestHandler(svc).Create)
+	request := httptest.NewRequest(http.MethodPost, "/admin/accounts/42/intelligence-tests", strings.NewReader(`{"model":"gpt-5","runner":"http"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Nil(t, repo.record)
 }

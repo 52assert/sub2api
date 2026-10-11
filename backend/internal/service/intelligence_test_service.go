@@ -60,12 +60,6 @@ type IntelligenceTestRepository interface {
 }
 
 type intelligenceTestGenerator interface {
-	RunIntelligenceTest(context.Context, int64, string, string, string) (string, error)
-	ValidateIntelligenceTest(*Account, string, string) error
-}
-
-// Optional detailed generation preserves the original HTTP generator contract.
-type intelligenceTestDetailedGenerator interface {
 	ValidateIntelligenceTestRunner(context.Context, *Account, string, string, string) error
 	RunIntelligenceTestDetailed(context.Context, int64, string, string, string, string) (IntelligenceTestGenerationResult, error)
 }
@@ -91,17 +85,17 @@ type IntelligenceTestService struct {
 	stopOnce  sync.Once
 }
 
-func NewIntelligenceTestService(repo IntelligenceTestRepository, accounts AccountRepository, generator *AccountTestService) *IntelligenceTestService {
+func NewIntelligenceTestService(repo IntelligenceTestRepository, accounts AccountRepository, generator intelligenceTestGenerator) *IntelligenceTestService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &IntelligenceTestService{repo: repo, accounts: accounts, generator: generator, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 2)}
 }
 
 func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, model, effort, prompt string, runners ...string) (*IntelligenceTest, error) {
-	runner := IntelligenceTestRunnerHTTP
+	runner := IntelligenceTestRunnerCodex
 	if len(runners) > 0 && strings.TrimSpace(runners[0]) != "" {
 		runner = strings.TrimSpace(runners[0])
 	}
-	if runner != IntelligenceTestRunnerHTTP && runner != IntelligenceTestRunnerCodex {
+	if runner != IntelligenceTestRunnerCodex {
 		return nil, infraerrors.BadRequest("INVALID_TEST_RUNNER", "Select a valid test runner.")
 	}
 	model = strings.TrimSpace(model)
@@ -128,17 +122,8 @@ func (s *IntelligenceTestService) Create(ctx context.Context, accountID int64, m
 	if err != nil {
 		return nil, err
 	}
-	if detailed, ok := s.generator.(intelligenceTestDetailedGenerator); ok {
-		if err := detailed.ValidateIntelligenceTestRunner(ctx, account, model, effort, runner); err != nil {
-			return nil, err
-		}
-	} else {
-		if runner != IntelligenceTestRunnerHTTP {
-			return nil, infraerrors.BadRequest("CODEX_CLI_UNAVAILABLE", "Codex CLI runner is unavailable.")
-		}
-		if err := s.generator.ValidateIntelligenceTest(account, model, effort); err != nil {
-			return nil, err
-		}
+	if err := s.generator.ValidateIntelligenceTestRunner(ctx, account, model, effort, runner); err != nil {
+		return nil, err
 	}
 	record := &IntelligenceTest{AccountID: accountID, AccountName: account.Name, Platform: account.Platform, Model: model, ReasoningEffort: effort, Prompt: prompt, Status: "queued", Runner: runner}
 	if err := s.repo.Create(ctx, record); err != nil {
@@ -281,17 +266,19 @@ func (s *IntelligenceTestService) generate(ctx context.Context, record *Intellig
 			err = fmt.Errorf("generation panic: %v", recovered)
 		}
 	}()
-	if detailed, ok := s.generator.(intelligenceTestDetailedGenerator); ok {
-		result, generationErr := detailed.RunIntelligenceTestDetailed(ctx, record.AccountID, record.Model, record.Prompt, record.ReasoningEffort, record.Runner)
-		record.RunnerVersion = result.RunnerVersion
-		record.EffectiveModel = result.EffectiveModel
-		record.ArtifactName = result.ArtifactName
-		if generationErr == nil {
-			record.FinalMessage = result.FinalMessage
-		}
-		return result.Output, generationErr
+	// Older persisted HTTP jobs remain visible in history, but must never use
+	// the retired transport after a server upgrade.
+	if record.Runner != IntelligenceTestRunnerCodex {
+		return "", &intelligenceCLIError{cause: errors.New("retired intelligence test runner"), publicMessage: "HTTP tests are no longer supported. Please submit a new Codex CLI test."}
 	}
-	return s.generator.RunIntelligenceTest(ctx, record.AccountID, record.Model, record.Prompt, record.ReasoningEffort)
+	result, generationErr := s.generator.RunIntelligenceTestDetailed(ctx, record.AccountID, record.Model, record.Prompt, record.ReasoningEffort, IntelligenceTestRunnerCodex)
+	record.RunnerVersion = result.RunnerVersion
+	record.EffectiveModel = result.EffectiveModel
+	record.ArtifactName = result.ArtifactName
+	if generationErr == nil {
+		record.FinalMessage = result.FinalMessage
+	}
+	return result.Output, generationErr
 }
 
 func (s *IntelligenceTestService) logError(operation string, err error) {

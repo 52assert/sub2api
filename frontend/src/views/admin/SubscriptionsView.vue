@@ -694,11 +694,57 @@
           </p>
         </div>
         <div>
-          <label class="input-label">{{ t('admin.subscriptions.form.adjustDays') }}</label>
+          <label class="input-label">{{ t('admin.subscriptions.adjustmentMode') }}</label>
+          <Select
+            v-model="extendForm.mode"
+            :options="adjustmentModeOptions"
+            :disabled="submitting"
+            :aria-label="t('admin.subscriptions.adjustmentMode')"
+            data-test="subscription-adjustment-mode"
+          />
+        </div>
+        <div v-if="extendForm.mode === 'date'" class="space-y-3">
+          <div>
+            <label for="subscription-expiration" class="input-label">{{ t('admin.subscriptions.expirationTime') }}</label>
+            <input
+              id="subscription-expiration"
+              v-model="extendForm.expires_at"
+              type="datetime-local"
+              step="0.001"
+              :min="minimumExpirationInput"
+              :max="maximumExpirationInput"
+              :disabled="submitting"
+              required
+              class="input"
+            />
+          </div>
+          <div>
+            <p class="input-label">{{ t('admin.subscriptions.expirationShortcuts') }}</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="days in expirationShortcutDays"
+                :key="days"
+                type="button"
+                class="btn btn-secondary btn-sm"
+                :disabled="submitting"
+                :data-test="`subscription-expiration-${days}`"
+                @click="selectExpirationShortcut(days)"
+              >{{ t('admin.subscriptions.expirationShortcutDays', { days }) }}</button>
+            </div>
+            <p class="input-hint">{{ t('admin.subscriptions.expirationShortcutHint') }}</p>
+          </div>
+        </div>
+        <div v-else>
+          <label for="subscription-adjustment-days" class="input-label">{{ t('admin.subscriptions.form.adjustDays') }}</label>
           <div class="flex items-center gap-2">
             <input
+              id="subscription-adjustment-days"
               v-model.number="extendForm.days"
               type="number"
+              min="-36500"
+              max="36500"
+              step="1"
+              :disabled="submitting"
               required
               class="input text-center"
               :placeholder="t('admin.subscriptions.adjustDaysPlaceholder')"
@@ -706,10 +752,16 @@
           </div>
           <p class="input-hint">{{ t('admin.subscriptions.adjustHint') }}</p>
         </div>
+        <div class="rounded-lg bg-primary-50 p-3 text-sm dark:bg-primary-900/20" data-test="subscription-new-expiration">
+          <p class="text-gray-600 dark:text-gray-400">{{ t('admin.subscriptions.newExpiration') }}</p>
+          <time v-if="adjustedExpiration !== null" :datetime="new Date(adjustedExpiration).toISOString()" class="mt-1 block font-medium text-gray-900 dark:text-white">{{ formatDateTimeToMinute(new Date(adjustedExpiration)) }}</time>
+          <span v-else class="mt-1 block text-gray-500">—</span>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.subscriptions.expirationTimezoneHint', { timezone: browserTimeZone }) }}</p>
+        </div>
       </form>
       <template #footer>
         <div v-if="extendingSubscription" class="flex justify-end gap-3">
-          <button @click="closeExtendModal" type="button" class="btn btn-secondary">
+          <button @click="closeExtendModal" type="button" :disabled="submitting" class="btn btn-secondary">
             {{ t('common.cancel') }}
           </button>
           <button
@@ -844,13 +896,19 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
-import type { AdminUser, UserSubscription, Group, GroupPlatform, SubscriptionType } from '@/types'
+import type { AdminUser, UserSubscription, Group, GroupPlatform, SubscriptionType, ExtendSubscriptionRequest } from '@/types'
 import type { SimpleUser } from '@/api/admin/usage'
 import type { SubscriptionBulkAction, SubscriptionBulkActionResult, BulkAssignSubscriptionResult } from '@/api/admin/subscriptions'
 import { useTableSelection } from '@/composables/useTableSelection'
 import BulkSubscriptionActionDialog from '@/components/admin/subscription/BulkSubscriptionActionDialog.vue'
 import type { Column } from '@/components/common/types'
-import { formatDateTimeToMinute } from '@/utils/format'
+import { formatDateTimeToMinute, getBrowserTimeZone } from '@/utils/format'
+import {
+  MAX_SUBSCRIPTION_EXPIRATION,
+  formatSubscriptionExpirationInput,
+  parseSubscriptionExpirationInput,
+  subscriptionExpirationAfterDays
+} from '@/utils/subscriptionExpiration'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -1100,7 +1158,23 @@ const assignForm = reactive({
 })
 
 const extendForm = reactive({
-  days: 30
+  mode: 'date' as 'date' | 'days',
+  days: 30,
+  expires_at: ''
+})
+const adjustmentNow = ref(Date.now())
+const browserTimeZone = getBrowserTimeZone()
+const expirationShortcutDays = [7, 30, 90, 365]
+const minimumExpirationInput = computed(() => formatSubscriptionExpirationInput(adjustmentNow.value + 1))
+const maximumExpirationInput = formatSubscriptionExpirationInput(MAX_SUBSCRIPTION_EXPIRATION)
+const adjustmentModeOptions = computed(() => [
+  { value: 'date', label: t('admin.subscriptions.setExpiration') },
+  { value: 'days', label: t('admin.subscriptions.adjustByDays') }
+])
+const adjustedExpiration = computed(() => {
+  if (extendForm.mode === 'date') return parseSubscriptionExpirationInput(extendForm.expires_at)
+  if (!Number.isInteger(extendForm.days) || extendForm.days === 0 || Math.abs(extendForm.days) > 36500) return null
+  return subscriptionExpirationAfterDays(extendingSubscription.value?.expires_at, extendForm.days, adjustmentNow.value)
 })
 
 // Group options for filter (all groups)
@@ -1391,34 +1465,56 @@ const handleAssignSubscription = async () => {
 
 const handleExtend = (subscription: UserSubscription) => {
   extendingSubscription.value = subscription
+  extendForm.mode = 'date'
   extendForm.days = 30
+  selectExpirationShortcut(30)
   showExtendModal.value = true
 }
 
+const selectExpirationShortcut = (days: number) => {
+  adjustmentNow.value = Date.now()
+  const expiration = subscriptionExpirationAfterDays(extendingSubscription.value?.expires_at, days, adjustmentNow.value)
+  extendForm.expires_at = formatSubscriptionExpirationInput(expiration)
+}
+
 const closeExtendModal = () => {
+  if (submitting.value) return
   showExtendModal.value = false
   extendingSubscription.value = null
 }
 
 const handleExtendSubscription = async () => {
-  if (!extendingSubscription.value) return
+  if (!extendingSubscription.value || submitting.value) return
 
-  // 前端验证：调整后的过期时间必须在未来
-  if (extendingSubscription.value.expires_at) {
-    const expiresAt = new Date(extendingSubscription.value.expires_at)
-    const newExpiresAt = new Date(expiresAt.getTime() + extendForm.days * 24 * 60 * 60 * 1000)
-    if (newExpiresAt <= new Date()) {
-      appStore.showError(t('admin.subscriptions.adjustWouldExpire'))
+  let request: ExtendSubscriptionRequest
+  if (extendForm.mode === 'date') {
+    const expiration = parseSubscriptionExpirationInput(extendForm.expires_at)
+    if (expiration === null) {
+      appStore.showError(t('admin.subscriptions.invalidExpiration'))
       return
     }
+    if (expiration <= Date.now()) {
+      appStore.showError(t('admin.subscriptions.expirationMustBeFuture'))
+      return
+    }
+    if (expiration > MAX_SUBSCRIPTION_EXPIRATION) {
+      appStore.showError(t('admin.subscriptions.expirationTooLate', { max: maximumExpirationInput.replace('T', ' ') }))
+      return
+    }
+    request = { expires_at: new Date(expiration).toISOString() }
+  } else {
+    if (!Number.isInteger(extendForm.days) || extendForm.days === 0 || Math.abs(extendForm.days) > 36500) {
+      appStore.showError(t('admin.subscriptions.bulk.invalidDays'))
+      return
+    }
+    request = { days: extendForm.days }
   }
 
   submitting.value = true
   try {
-    await adminAPI.subscriptions.extend(extendingSubscription.value.id, {
-      days: extendForm.days
-    })
+    await adminAPI.subscriptions.extend(extendingSubscription.value.id, request)
     appStore.showSuccess(t('admin.subscriptions.subscriptionAdjusted'))
+    submitting.value = false
     closeExtendModal()
     loadSubscriptions()
   } catch (error: any) {

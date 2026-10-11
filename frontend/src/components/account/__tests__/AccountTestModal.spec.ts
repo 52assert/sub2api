@@ -148,10 +148,10 @@ describe('AccountTestModal', () => {
     })
   })
 
-  it('renders Chat Completions path status from test SSE', async () => {
+  it('labels the default OpenAI test as CLI and renders CLI status from test SSE', async () => {
     const encoder = new TextEncoder()
     const chunks = [
-      encoder.encode('data: {"type":"status","text":"已通过 /v1/chat/completions 验证"}\n\n'),
+      encoder.encode('data: {"type":"status","text":"Codex CLI 0.160.0"}\n\n'),
       encoder.encode('data: {"type":"test_complete","success":true}\n\n')
     ]
     global.fetch = vi.fn().mockResolvedValue({
@@ -183,10 +183,13 @@ describe('AccountTestModal', () => {
     })
 
     await flushPromises()
+    expect(wrapper.text()).toContain('admin.accounts.openai.cliTestHint')
     ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
     await (wrapper.vm as any).startTest()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('已通过 /v1/chat/completions 验证')
+    const [, options] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(options.body)).toMatchObject({ model_id: 'gpt-5.4', mode: 'default' })
+    expect(wrapper.text()).toContain('Codex CLI 0.160.0')
   })
 })

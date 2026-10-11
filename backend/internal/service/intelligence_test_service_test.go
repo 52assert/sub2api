@@ -68,16 +68,20 @@ func (r intelligenceTestAccounts) GetByID(context.Context, int64) (*Account, err
 }
 
 type intelligenceTestGeneratorStub struct {
-	started chan struct{}
-	finish  chan struct{}
-	err     error
-	panic   bool
+	started         chan struct{}
+	finish          chan struct{}
+	err             error
+	panic           bool
+	validatedRunner string
+	generatedRunner string
 }
 
-func (*intelligenceTestGeneratorStub) ValidateIntelligenceTest(*Account, string, string) error {
+func (g *intelligenceTestGeneratorStub) ValidateIntelligenceTestRunner(_ context.Context, _ *Account, _, _, runner string) error {
+	g.validatedRunner = runner
 	return nil
 }
-func (g *intelligenceTestGeneratorStub) RunIntelligenceTest(ctx context.Context, _ int64, _, _, _ string) (string, error) {
+func (g *intelligenceTestGeneratorStub) RunIntelligenceTestDetailed(ctx context.Context, _ int64, _, _, _, runner string) (IntelligenceTestGenerationResult, error) {
+	g.generatedRunner = runner
 	if g.panic {
 		panic("provider panic")
 	}
@@ -88,10 +92,10 @@ func (g *intelligenceTestGeneratorStub) RunIntelligenceTest(ctx context.Context,
 		select {
 		case <-g.finish:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return IntelligenceTestGenerationResult{}, ctx.Err()
 		}
 	}
-	return "<svg></svg>", g.err
+	return IntelligenceTestGenerationResult{Output: "<svg></svg>"}, g.err
 }
 
 func intelligenceServiceForTest(t *testing.T, generator *intelligenceTestGeneratorStub) (*IntelligenceTestService, *intelligenceTestMemoryRepo) {
@@ -248,7 +252,7 @@ func (*intelligenceTestDetailedStub) RunIntelligenceTestDetailed(context.Context
 	return IntelligenceTestGenerationResult{Output: "<svg></svg>", RunnerVersion: "0.160.0", EffectiveModel: "mapped-model", ArtifactName: "index.html", FinalMessage: "Generated HTML"}, nil
 }
 
-func TestIntelligenceTestPersistsDetailedRunnerResultAndKeepsHTTPDefault(t *testing.T) {
+func TestIntelligenceTestPersistsDetailedRunnerResult(t *testing.T) {
 	svc, repo := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
 	svc.generator = &intelligenceTestDetailedStub{intelligenceTestGeneratorStub: &intelligenceTestGeneratorStub{}}
 	record, err := svc.Create(context.Background(), 1, "public-model", "high", "", IntelligenceTestRunnerCodex)
@@ -262,10 +266,35 @@ func TestIntelligenceTestPersistsDetailedRunnerResultAndKeepsHTTPDefault(t *test
 	require.Equal(t, "Generated HTML", result.FinalMessage)
 	_, err = svc.Create(context.Background(), 1, "public-model", "high", "", "invalid-runner")
 	require.Error(t, err)
-	legacy, _ := intelligenceServiceForTest(t, &intelligenceTestGeneratorStub{})
-	defaultRecord, err := legacy.Create(context.Background(), 1, "public-model", "high", "")
-	require.NoError(t, err)
-	require.Equal(t, IntelligenceTestRunnerHTTP, defaultRecord.Runner)
-	_, err = legacy.Create(context.Background(), 1, "public-model", "high", "", IntelligenceTestRunnerCodex)
-	require.Error(t, err)
+
+}
+
+func TestIntelligenceTestOnlyCreatesCodexCLIJobs(t *testing.T) {
+	for _, runner := range []string{"", "  ", IntelligenceTestRunnerCodex} {
+		t.Run(runner, func(t *testing.T) {
+			generator := &intelligenceTestGeneratorStub{}
+			svc, _ := intelligenceServiceForTest(t, generator)
+			record, err := svc.Create(context.Background(), 1, "gpt-test", "default", "", runner)
+			require.NoError(t, err)
+			require.Equal(t, IntelligenceTestRunnerCodex, record.Runner)
+			require.Equal(t, IntelligenceTestRunnerCodex, generator.validatedRunner)
+		})
+	}
+	generator := &intelligenceTestGeneratorStub{}
+	svc, repo := intelligenceServiceForTest(t, generator)
+	_, err := svc.Create(context.Background(), 1, "gpt-test", "default", "", IntelligenceTestRunnerHTTP)
+	require.ErrorContains(t, err, "valid test runner")
+	require.Empty(t, repo.records)
+	require.Empty(t, generator.validatedRunner)
+}
+
+func TestIntelligenceTestDoesNotExecutePersistedHTTPJobs(t *testing.T) {
+	generator := &intelligenceTestGeneratorStub{}
+	svc, repo := intelligenceServiceForTest(t, generator)
+	svc.run(&IntelligenceTest{ID: 1, Runner: IntelligenceTestRunnerHTTP})
+	result := awaitIntelligenceResult(t, repo)
+	require.Equal(t, "failed", result.Status)
+	require.Contains(t, result.Error, "no longer supported")
+	require.Equal(t, IntelligenceTestRunnerHTTP, result.Runner)
+	require.Empty(t, generator.generatedRunner)
 }

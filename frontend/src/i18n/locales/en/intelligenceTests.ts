@@ -7,6 +7,7 @@ export default {
     runner: 'Execution method',
     runners: { http: 'HTTP request', codex_cli: 'Codex CLI' },
     codexCliHint: 'Codex CLI runs the actual client using the selected account.',
+    unsupportedAccount: 'Intelligence tests require an OpenAI OAuth account or a Responses API key account.',
     runnerVersion: 'CLI version',
     effectiveModel: 'Actual model',
     artifactName: 'Artifact file',
