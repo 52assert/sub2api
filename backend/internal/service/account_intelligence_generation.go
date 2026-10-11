@@ -150,13 +150,6 @@ func intelligenceModelMetadata(account *Account, selected, mapped string) (Upstr
 	return account.GetUpstreamModelMetadata(selected)
 }
 
-func intelligenceOutputTokenBudget(account *Account, selected string) int {
-	if metadata, ok := intelligenceModelMetadata(account, selected, account.GetMappedModel(selected)); ok && metadata.MaxOutputTokens > 0 && metadata.MaxOutputTokens < intelligenceMaxTokens {
-		return int(metadata.MaxOutputTokens)
-	}
-	return intelligenceMaxTokens
-}
-
 func intelligenceMediaModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return isOpenAIImageModel(model) || isImageGenerationModel(model) || isGrokImageGenerationModel(model) || isGrokVideoGenerationModel(model) ||
@@ -270,57 +263,6 @@ func (s *AccountTestService) RunIntelligenceTest(ctx context.Context, accountID 
 	}
 	result, err := s.RunIntelligenceTestDetailed(ctx, accountID, model, prompt, reasoningEffort, IntelligenceTestRunnerCodex)
 	return result.Output, err
-}
-
-type intelligenceCaptureWriter struct {
-	header   http.Header
-	output   strings.Builder
-	complete bool
-	err      error
-	cancel   context.CancelFunc
-}
-
-func (w *intelligenceCaptureWriter) Header() http.Header { return w.header }
-func (w *intelligenceCaptureWriter) WriteHeader(int)     {}
-func (w *intelligenceCaptureWriter) Flush()              {}
-func (w *intelligenceCaptureWriter) Write(data []byte) (int, error) {
-	if w.err != nil {
-		return 0, w.err
-	}
-	if len(data) > intelligenceMaxOutputBytes*6 {
-		w.fail(errors.New("测试输出超过 2 MiB 限制"))
-		return 0, w.err
-	}
-	var event TestEvent
-	encoded := bytes.TrimSpace(data)
-	encoded = bytes.TrimSpace(bytes.TrimPrefix(encoded, []byte("data:")))
-	if err := json.Unmarshal(encoded, &event); err != nil {
-		w.fail(fmt.Errorf("读取测试结果失败: %w", err))
-		return 0, w.err
-	}
-	switch event.Type {
-	case "content":
-		if w.output.Len()+len(event.Text) > intelligenceMaxOutputBytes {
-			w.fail(errors.New("测试输出超过 2 MiB 限制"))
-			return 0, w.err
-		}
-		_, _ = w.output.WriteString(event.Text)
-	case "error":
-		message := event.Error
-		if len(message) > 16<<10 {
-			message = message[:16<<10]
-		}
-		w.fail(errors.New(message))
-	case "test_complete":
-		w.complete = event.Success
-	}
-	return len(data), nil
-}
-func (w *intelligenceCaptureWriter) fail(err error) {
-	w.err = err
-	if w.cancel != nil {
-		w.cancel()
-	}
 }
 
 func applyIntelligencePayload(ctx context.Context, protocol, model string, payload map[string]any, isOAuth bool) error {
