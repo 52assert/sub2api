@@ -6,7 +6,7 @@ import BaseDialog from '../BaseDialog.vue'
 
 vi.mock('vue-i18n', async (importOriginal) => ({
   ...await importOriginal<typeof import('vue-i18n')>(),
-  useI18n: () => ({ t: (key: string) => key, locale: ref('en') })
+  useI18n: () => ({ t: (key: string, params?: { time: string }) => params?.time ? `${key}: ${params.time}` : key, locale: ref('en') })
 }))
 
 const initial = '2026-10-15T14:25:37.125'
@@ -49,6 +49,17 @@ describe('DateTimePicker', () => {
     expect(panel.get('[data-date="2026-10-11"]').attributes('aria-current')).toBe('date')
     expect(panel.find('input[type="date"], input[type="datetime-local"], input[type="time"]').exists()).toBe(false)
     expect(document.activeElement).toBe(panel.get('[data-date="2026-10-15"]').element)
+    const content = panel.get('[data-testid="datetime-picker-content"]')
+    const footer = panel.get('[data-testid="datetime-picker-footer"]')
+    expect(panel.classes()).toContain('flex-col')
+    expect(panel.classes()).toContain('overflow-hidden')
+    expect(content.classes()).toContain('min-h-0')
+    expect(content.classes()).toContain('overflow-y-auto')
+    expect(footer.classes()).toContain('shrink-0')
+    expect(footer.element.parentElement).toBe(panel.element)
+    expect(content.find('[data-testid="datetime-picker-draft"]').exists()).toBe(true)
+    expect(content.find('[data-testid="datetime-picker-confirm"]').exists()).toBe(false)
+    expect(footer.get('[data-testid="datetime-picker-confirm"]').exists()).toBe(true)
   })
 
   it('keeps date edits in a draft and preserves time, seconds and milliseconds on confirmation', async () => {
@@ -87,17 +98,150 @@ describe('DateTimePicker', () => {
     expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-15T09:05:37.125']])
   })
 
-  it('jumps directly to a year and month without changing the value until a date is selected', async () => {
+  it('confirms a selected month without requiring another click on a day', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-month"]').trigger('click')
+    await panel.get('[data-month="10"]').trigger('click')
+    expect(panel.get('[data-date="2026-11-15"]').attributes('aria-selected')).toBe('true')
+    expect(panel.get('[data-testid="datetime-picker-draft"]').text()).toContain('Nov 15, 2026 14:25')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2026-11-15T14:25:37.125')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-11-15T14:25:37.125']])
+  })
+
+  it('confirms a selected year without requiring another month or day selection', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-next"]').trigger('click')
+    await panel.get('[data-year="2030"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2030-10-15T14:25:37.125')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2030-10-15T14:25:37.125']])
+  })
+
+  it('updates both the year and month draft before allowing an explicit day override', async () => {
     const wrapper = mountPicker()
     await openPicker(wrapper)
     await getPanel().get('[data-testid="datetime-picker-year"]').trigger('click')
     await getPanel().get('[data-testid="datetime-picker-next"]').trigger('click')
     await getPanel().get('[data-year="2030"]').trigger('click')
     await getPanel().get('[data-month="1"]').trigger('click')
+    expect(getPanel().get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2030-02-15T14:25:37.125')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
     await getPanel().get('[data-date="2030-02-20"]').trigger('click')
     await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')).toEqual([['2030-02-20T14:25:37.125']])
+  })
+
+  it('uses the displayed year when choosing a month after browsing years', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-month"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-next"]').trigger('click')
+    await panel.get('[data-month="1"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2027-02-15T14:25:37.125']])
+  })
+
+  it('uses the displayed month when choosing a year after browsing months', async () => {
+    const wrapper = mountPicker({ modelValue: '2026-12-31T14:25:37.125' })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-next"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-next"]').trigger('click')
+    await panel.get('[data-year="2030"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2030-01-31T14:25:37.125']])
+  })
+
+  it.each([
+    ['2027-01-31T14:25:37.125', 1, '2027-02-28T14:25:37.125'],
+    ['2028-01-31T14:25:37.125', 1, '2028-02-29T14:25:37.125'],
+    ['2027-03-31T14:25:37.125', 3, '2027-04-30T14:25:37.125']
+  ])('clamps %s to the selected month end while preserving the time', async (modelValue, month, expected) => {
+    const wrapper = mountPicker({ modelValue })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-month"]').trigger('click')
+    await panel.get(`[data-month="${month}"]`).trigger('click')
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[expected]])
+  })
+
+  it('clamps February 29 when selecting a non-leap year', async () => {
+    const wrapper = mountPicker({ modelValue: '2028-02-29T14:25:37.125' })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-year="2029"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2029-02-28T14:25:37.125']])
+  })
+
+  it('discards year and month selections on cancellation', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-year="2027"]').trigger('click')
+    await panel.get('[data-month="1"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2027-02-15T14:25:37.125')
+    await panel.get('[data-testid="datetime-picker-cancel"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await openPicker(wrapper)
+    expect(getPanel().get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe(initial)
+  })
+
+  it.each(['days', 'months', 'years'])('keeps the draft unchanged while browsing %s with navigation arrows', async (view) => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    if (view === 'months') await panel.get('[data-testid="datetime-picker-month"]').trigger('click')
+    if (view === 'years') await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-testid="datetime-picker-next"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe(initial)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[initial]])
+  })
+
+  it('explains why a selected month is before the minimum instead of silently adjusting it', async () => {
+    const wrapper = mountPicker({ modelValue: '2027-03-15T14:25:37.125', min: '2027-02-20T16:30:00.000' })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-month"]').trigger('click')
+    await panel.get('[data-month="1"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2027-02-15T14:25:37.125')
+    expect(panel.get('[data-testid="datetime-picker-validation"]').text()).toBe('dateTimePicker.beforeMinimum: Feb 20, 2027 16:30')
+    expect(panel.get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeDefined()
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await panel.get('[data-date="2027-02-21"]').trigger('click')
+    expect(panel.find('[data-testid="datetime-picker-validation"]').exists()).toBe(false)
+    expect(panel.get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('explains why a selected boundary year is after the maximum instead of changing the month', async () => {
+    const wrapper = mountPicker({ modelValue: '2026-10-15T14:25:37.125', max: '2027-03-20T16:30:00.000' })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    await panel.get('[data-year="2027"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2027-10-15T14:25:37.125')
+    expect(panel.get('[data-testid="datetime-picker-validation"]').text()).toBe('dateTimePicker.afterMaximum: Mar 20, 2027 16:30')
+    expect(panel.get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeDefined()
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await panel.get('[data-month="1"]').trigger('click')
+    expect(panel.find('[data-testid="datetime-picker-validation"]').exists()).toBe(false)
+    expect(panel.get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('preserves the time when choosing today and explains when it is already in the past', async () => {
+    const wrapper = mountPicker({ modelValue: '2026-10-15T09:25:37.125', min: '2026-10-11T10:30:20.124' })
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-testid="datetime-picker-today"]').trigger('click')
+    expect(panel.get('[data-testid="datetime-picker-draft"] time').attributes('datetime')).toBe('2026-10-11T09:25:37.125')
+    expect(panel.get('[data-testid="datetime-picker-validation"]').text()).toBe('dateTimePicker.beforeMinimum: Oct 11, 2026 10:30')
+    expect(panel.get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeDefined()
   })
 
   it('moves across a year boundary with month navigation and selects today without emitting early', async () => {
@@ -205,6 +349,7 @@ describe('DateTimePicker', () => {
   })
 
   it('fits a narrow mobile viewport and repositions on resize and ancestor scrolling', async () => {
+    vi.stubGlobal('visualViewport', undefined)
     vi.stubGlobal('innerWidth', 320)
     vi.stubGlobal('innerHeight', 700)
     let rect = new DOMRect(230, 600, 70, 52)
@@ -213,17 +358,79 @@ describe('DateTimePicker', () => {
     const panel = await openPicker(wrapper)
     expect(panel.element.style.left).toBe('12px')
     expect(panel.element.style.width).toBe('296px')
-    expect(panel.element.style.bottom).toBe('108px')
+    expect(panel.element.style.top).toBe('12px')
+    expect(panel.element.style.maxHeight).toBe('676px')
+    expect(panel.element.style.bottom).toBe('')
     vi.stubGlobal('innerWidth', 1440)
     rect = new DOMRect(900, 100, 350, 52)
     window.dispatchEvent(new Event('resize'))
     await flushPromises()
     expect(panel.element.style.left).toBe('890px')
     expect(panel.element.style.top).toBe('160px')
+    expect(panel.element.style.maxHeight).not.toBe('676px')
     rect = new DOMRect(800, 120, 350, 52)
     document.dispatchEvent(new Event('scroll'))
     await flushPromises()
     expect(panel.element.style.left).toBe('790px')
     expect(panel.element.style.top).toBe('180px')
+  })
+
+  it.each([349, 800])('fits the visual viewport when the page overflows to %spx wide', async (innerWidth) => {
+    vi.stubGlobal('innerWidth', innerWidth)
+    vi.stubGlobal('innerHeight', 620)
+    const viewport = Object.assign(new EventTarget(), { width: 320, height: 568, offsetLeft: 4, offsetTop: 0 })
+    vi.stubGlobal('visualViewport', viewport)
+    const removeListener = vi.spyOn(viewport, 'removeEventListener')
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(230, 300, 70, 52))
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    expect(panel.element.style.left).toBe('16px')
+    expect(panel.element.style.width).toBe('296px')
+    expect(panel.element.style.top).toBe('12px')
+    expect(panel.element.style.maxHeight).toBe('544px')
+    viewport.width = 300; viewport.height = 520
+    viewport.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(panel.element.style.width).toBe('276px')
+    expect(panel.element.style.maxHeight).toBe('496px')
+    viewport.offsetLeft = 10; viewport.offsetTop = 18
+    viewport.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(panel.element.style.left).toBe('22px')
+    expect(panel.element.style.top).toBe('30px')
+    wrapper.unmount()
+    expect(removeListener).toHaveBeenCalledWith('resize', expect.any(Function))
+    expect(removeListener).toHaveBeenCalledWith('scroll', expect.any(Function))
+  })
+
+  it('uses document client dimensions when the visual viewport is unavailable', async () => {
+    vi.stubGlobal('visualViewport', undefined)
+    vi.stubGlobal('innerWidth', 800)
+    vi.stubGlobal('innerHeight', 620)
+    vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(320)
+    vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(568)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(230, 300, 70, 52))
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    expect(panel.element.style.left).toBe('12px')
+    expect(panel.element.style.width).toBe('296px')
+    expect(panel.element.style.top).toBe('12px')
+    expect(panel.element.style.maxHeight).toBe('544px')
+  })
+
+  it.each([[30, 100], [580, 0]])('closes when the trigger leaves the visual viewport from top %s', async (triggerTop, offsetTop) => {
+    vi.stubGlobal('innerWidth', 349)
+    vi.stubGlobal('innerHeight', 620)
+    const viewport = Object.assign(new EventTarget(), { width: 320, height: 568, offsetLeft: 0, offsetTop })
+    vi.stubGlobal('visualViewport', viewport)
+    let rect = new DOMRect(230, 300, 70, 52)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => rect)
+    const wrapper = mountPicker()
+    await openPicker(wrapper)
+    rect = new DOMRect(230, triggerTop, 70, 52)
+    viewport.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(panelExists()).toBe(false)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
   })
 })
