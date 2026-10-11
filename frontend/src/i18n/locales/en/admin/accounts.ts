@@ -739,6 +739,7 @@ export default {
         testModeCompact: 'Compact probe',
         cliTestHint: 'Test the connection with Codex CLI using the selected account, model, and proxy.',
         runningCliTest: 'Running Codex CLI...',
+        cliTestStarted: 'Starting Codex CLI connection test',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
       },
       grok: {
@@ -1566,7 +1567,7 @@ export default {
       testFailed: 'Test failed',
       connectedToApi: 'Connected to API',
       usingModel: 'Using model: {model}',
-      sendingTestMessage: 'Sending test message: "hi"',
+      sendingTestMessage: 'Sending test message: "{message}"',
       sendingImageRequest: 'Sending image generation test request...',
       response: 'Response:',
       startTest: 'Start Test',

@@ -455,5 +455,20 @@ export default {
     adminApiKeyForbidden: '管理 API Key 无法执行此操作，请使用已通过二次验证的管理员会话。'
   },
 
+  dateTimePicker: {
+    selectDateTime: '选择日期和时间',
+    date: '日期',
+    time: '时间',
+    hour: '小时',
+    minute: '分钟',
+    previousMonth: '上个月',
+    nextMonth: '下个月',
+    today: '今天',
+    confirm: '确定时间',
+    cancel: '取消',
+    selectMonth: '选择月份',
+    selectYear: '选择年份'
+  },
+
   // Dashboard
 }

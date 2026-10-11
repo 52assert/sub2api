@@ -2,6 +2,10 @@
 
 FRONTEND_CRITICAL_VITEST := \
 	src/i18n/__tests__/localeKeyCompleteness.spec.ts \
+	src/components/common/__tests__/DateTimePicker.spec.ts \
+	src/components/account/__tests__/AccountTestModal.spec.ts \
+	src/components/admin/account/__tests__/AccountTestModal.spec.ts \
+	src/views/admin/__tests__/SubscriptionsView.expiration.spec.ts \
 	src/api/__tests__/client.spec.ts \
 	src/api/__tests__/tokenRefresh.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \

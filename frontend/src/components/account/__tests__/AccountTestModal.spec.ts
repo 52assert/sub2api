@@ -26,7 +26,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: Record<string, string | number>) => key === 'admin.accounts.sendingTestMessage' ? `Sending: ${params?.message}` : key
     })
   }
 })
@@ -151,7 +151,9 @@ describe('AccountTestModal', () => {
   it('labels the default OpenAI test as CLI and renders CLI status from test SSE', async () => {
     const encoder = new TextEncoder()
     const chunks = [
+      encoder.encode('data: {"type":"test_start","model":"gpt-5.4"}\n\n'),
       encoder.encode('data: {"type":"status","text":"Codex CLI 0.160.0"}\n\n'),
+      encoder.encode('data: {"type":"content","text":"Hello! How can I help?"}\n\n'),
       encoder.encode('data: {"type":"test_complete","success":true}\n\n')
     ]
     global.fetch = vi.fn().mockResolvedValue({
@@ -189,7 +191,11 @@ describe('AccountTestModal', () => {
     await flushPromises()
 
     const [, options] = (global.fetch as any).mock.calls[0]
-    expect(JSON.parse(options.body)).toMatchObject({ model_id: 'gpt-5.4', mode: 'default' })
+    expect(JSON.parse(options.body)).toMatchObject({ model_id: 'gpt-5.4', prompt: 'hi', mode: 'default' })
     expect(wrapper.text()).toContain('Codex CLI 0.160.0')
+    expect(wrapper.text()).toContain('Sending: hi')
+    expect(wrapper.text()).toContain('Hello! How can I help?')
+    expect(wrapper.text()).toContain('admin.accounts.openai.cliTestStarted')
+    expect(wrapper.text()).not.toContain('admin.accounts.connectedToApi')
   })
 })

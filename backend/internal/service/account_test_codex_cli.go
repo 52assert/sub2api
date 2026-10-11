@@ -20,9 +20,10 @@ func (s *AccountTestService) testOpenAICLIConnection(c *gin.Context, account *Ac
 	if modelID == "" {
 		modelID = openai.DefaultTestModel
 	}
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		prompt = "Reply with OK. Do not use tools."
+	// Match the message displayed by account connectivity tests. Preserve
+	// explicit input instead of adding instructions that predetermine the reply.
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "hi"
 	}
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")

@@ -37,6 +37,10 @@ async function openAdjustment(overrides: Partial<UserSubscription> = {}) {
           props: ['modelValue', 'options', 'disabled'], emits: ['update:modelValue'],
           template: '<select :value="modelValue" :disabled="disabled" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>'
         },
+        DateTimePicker: {
+          props: ['modelValue', 'min', 'max', 'disabled'], emits: ['update:modelValue'],
+          template: '<input :value="modelValue" :min="min" :max="max" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+        },
         Pagination: true, ConfirmDialog: true, Icon: true, GroupBadge: true,
         GroupOptionItem: true, EmptyState: true, Teleport: true, RouterLink: true
       }
@@ -61,7 +65,8 @@ describe('subscription expiration adjustment', () => {
   it('defaults to choosing a date, previews a 30-day renewal, and converts the maximum to local time', async () => {
     const wrapper = await openAdjustment()
     const expected = Date.parse(subscription.expires_at!) + 30 * 86400000
-    expect(wrapper.get<HTMLSelectElement>('[data-test="subscription-adjustment-mode"]').element.value).toBe('date')
+    expect(wrapper.get('[data-test="subscription-mode-date"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="subscription-expiration-30"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.get<HTMLInputElement>('#subscription-expiration').element.value).toBe(formatSubscriptionExpirationInput(expected))
     expect(wrapper.get('#subscription-expiration').attributes('max')).toBe(formatSubscriptionExpirationInput(MAX_SUBSCRIPTION_EXPIRATION))
     expect(wrapper.get('[data-test="subscription-new-expiration"] time').attributes('datetime')).toBe(new Date(expected).toISOString())
@@ -100,7 +105,7 @@ describe('subscription expiration adjustment', () => {
     { overrides: { status: 'expired', expires_at: '2025-01-01T00:00:00Z' }, days: 30 }
   ])('keeps relative day adjustments compatible for %o', async ({ overrides, days }) => {
     const wrapper = await openAdjustment(overrides as Partial<UserSubscription>)
-    await wrapper.get('[data-test="subscription-adjustment-mode"]').setValue('days')
+    await wrapper.get('[data-test="subscription-mode-days"]').trigger('click')
     await wrapper.get('#subscription-adjustment-days').setValue(days)
     await wrapper.get('#extend-subscription-form').trigger('submit')
     expect(extend).toHaveBeenCalledWith(42, { days })
@@ -121,7 +126,7 @@ describe('subscription expiration adjustment', () => {
 
   it.each([0, 1.5, 36501])('rejects invalid relative days %s', async (days) => {
     const wrapper = await openAdjustment()
-    await wrapper.get('[data-test="subscription-adjustment-mode"]').setValue('days')
+    await wrapper.get('[data-test="subscription-mode-days"]').trigger('click')
     await wrapper.get('#subscription-adjustment-days').setValue(days)
     await wrapper.get('#extend-subscription-form').trigger('submit')
     expect(extend).not.toHaveBeenCalled()

@@ -848,6 +848,7 @@ export default {
         testModeCompact: 'Compact 探测',
         cliTestHint: '使用 Codex CLI 执行连接测试，沿用所选账号、模型和代理。',
         runningCliTest: '正在运行 Codex CLI...',
+        cliTestStarted: '开始 Codex CLI 连接测试',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       grok: {
@@ -1655,7 +1656,7 @@ export default {
       testCompleted: '测试完成！',
       connectedToApi: '已连接到 API',
       usingModel: '使用模型：{model}',
-      sendingTestMessage: '发送测试消息："hi"',
+      sendingTestMessage: '发送测试消息："{message}"',
       sendingImageRequest: '发送生图测试请求...',
       response: '响应：',
       startTest: '开始测试',
