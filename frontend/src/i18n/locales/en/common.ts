@@ -456,5 +456,20 @@ export default {
     adminApiKeyForbidden: 'Admin API keys cannot perform this operation. Use a two-factor verified admin session.'
   },
 
+  dateTimePicker: {
+    selectDateTime: 'Select date and time',
+    date: 'Date',
+    time: 'Time',
+    hour: 'Hour',
+    minute: 'Minute',
+    previousMonth: 'Previous month',
+    nextMonth: 'Next month',
+    today: 'Today',
+    confirm: 'Confirm time',
+    cancel: 'Cancel',
+    selectMonth: 'Select month',
+    selectYear: 'Select year'
+  },
+
   // Dashboard
 }

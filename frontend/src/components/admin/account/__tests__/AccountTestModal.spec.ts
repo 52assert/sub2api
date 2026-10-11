@@ -30,6 +30,7 @@ vi.mock('vue-i18n', async () => {
     ...actual,
     useI18n: () => ({
       t: (key: string, params?: Record<string, string | number>) => {
+        if (key === 'admin.accounts.sendingTestMessage') return `Sending: ${params?.message}`
         if (key === 'admin.accounts.imageReceived' && params?.count) {
           return `received-${params.count}`
         }
@@ -226,7 +227,9 @@ describe('AccountTestModal', () => {
   it('OpenAI 默认文本连接测试展示 Codex CLI 并提交默认模式', async () => {
     getAvailableModels.mockResolvedValue([{ id: 'gpt-5.4', display_name: 'GPT-5.4' }])
     global.fetch = vi.fn().mockResolvedValue(createStreamResponse([
+      'data: {"type":"test_start","model":"gpt-5.4"}\n',
       'data: {"type":"status","text":"Codex CLI 0.160.0"}\n',
+      'data: {"type":"content","text":"Hello! How can I help?"}\n',
       'data: {"type":"test_complete","success":true}\n'
     ])) as any
     const wrapper = mountModal({ id: 42, name: 'OpenAI OAuth', platform: 'openai', type: 'oauth', status: 'active' })
@@ -236,8 +239,12 @@ describe('AccountTestModal', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))!.trigger('click')
     await flushPromises()
     const [, request] = (global.fetch as any).mock.calls[0]
-    expect(JSON.parse(request.body)).toEqual({ model_id: 'gpt-5.4', prompt: '', mode: 'default' })
+    expect(JSON.parse(request.body)).toEqual({ model_id: 'gpt-5.4', prompt: 'hi', mode: 'default' })
     expect(wrapper.text()).toContain('Codex CLI 0.160.0')
+    expect(wrapper.text()).toContain('Sending: hi')
+    expect(wrapper.text()).toContain('Hello! How can I help?')
+    expect(wrapper.text()).toContain('admin.accounts.openai.cliTestStarted')
+    expect(wrapper.text()).not.toContain('admin.accounts.connectedToApi')
     wrapper.unmount()
   })
 

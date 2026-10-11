@@ -4,9 +4,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -17,6 +19,41 @@ import (
 const accountCLISuccessScript = `printf 'OK' > "$final"
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}' '{"type":"turn.completed"}'
 `
+
+const accountCLIEchoPromptScript = `cat "$capture/prompt" > "$final"
+printf '%s\n' '{"type":"turn.completed"}'
+`
+
+func TestAccountConnectionCodexCLISendsTheDisplayedMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, model, prompt, wantPrompt string
+	}{
+		{"default message and model", "", "", "hi"},
+		{"whitespace uses default message", "selected", " \n ", "hi"},
+		{"explicit message is unchanged", "selected", "  自定义测试消息\n请按实际内容回答。  ", "  自定义测试消息\n请按实际内容回答。  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &Account{ID: 37, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "synthetic-api-key", "model_mapping": map[string]any{"selected": "gpt-5.4", openai.DefaultTestModel: "gpt-5.4"}}}
+			svc, fixture := intelligenceCLITestService(t, account, accountCLIEchoPromptScript)
+			upstream := &queuedHTTPUpstream{}
+			svc.httpUpstream = upstream
+			c, recorder := newTestContext()
+
+			require.NoError(t, svc.TestAccountConnection(c, account.ID, tc.model, tc.prompt, AccountTestModeDefault))
+
+			actualPrompt, err := os.ReadFile(filepath.Join(fixture, "prompt"))
+			require.NoError(t, err)
+			require.Equal(t, tc.wantPrompt, string(actualPrompt))
+			require.Empty(t, upstream.requests)
+			content, err := json.Marshal(TestEvent{Type: "content", Text: strings.TrimSpace(tc.wantPrompt)})
+			require.NoError(t, err)
+			require.Contains(t, recorder.Body.String(), string(content))
+			require.NotContains(t, recorder.Body.String(), `"type":"content","text":"OK"`)
+		})
+	}
+}
 
 func TestAccountConnectionUsesCodexCLIWithSelectedModelAndPrompt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -96,18 +133,18 @@ func TestAccountConnectionMissingCodexCLIFailsWithoutHTTP(t *testing.T) {
 func TestAccountBackgroundConnectionUsesCodexCLIAndDefaultPrompt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := &Account{ID: 35, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-api-key"}}
-	svc, fixture := intelligenceCLITestService(t, account, accountCLISuccessScript)
+	svc, fixture := intelligenceCLITestService(t, account, accountCLIEchoPromptScript)
 
 	result, err := svc.RunTestBackground(context.Background(), account.ID, "")
 	require.NoError(t, err)
 	require.Equal(t, "success", result.Status)
-	require.Equal(t, "OK", result.ResponseText)
+	require.Equal(t, "hi", result.ResponseText)
 	args, err := os.ReadFile(filepath.Join(fixture, "args"))
 	require.NoError(t, err)
 	require.Contains(t, string(args), "--model\n"+openai.DefaultTestModel+"\n")
 	prompt, err := os.ReadFile(filepath.Join(fixture, "prompt"))
 	require.NoError(t, err)
-	require.Equal(t, "Reply with OK. Do not use tools.", string(prompt))
+	require.Equal(t, "hi", string(prompt))
 }
 
 func TestAccountConnectionMappedImagesKeepImageEndpoint(t *testing.T) {

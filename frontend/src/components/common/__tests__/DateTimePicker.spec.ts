@@ -1,0 +1,229 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, ref } from 'vue'
+import DateTimePicker from '../DateTimePicker.vue'
+import BaseDialog from '../BaseDialog.vue'
+
+vi.mock('vue-i18n', async (importOriginal) => ({
+  ...await importOriginal<typeof import('vue-i18n')>(),
+  useI18n: () => ({ t: (key: string) => key, locale: ref('en') })
+}))
+
+const initial = '2026-10-15T14:25:37.125'
+const getPanel = () => new DOMWrapper(document.querySelector<HTMLElement>('[data-testid="datetime-picker-panel"]')!)
+const panelExists = () => !!document.querySelector('[data-testid="datetime-picker-panel"]')
+function mountPicker(props: Partial<InstanceType<typeof DateTimePicker>['$props']> = {}) {
+  return mount(DateTimePicker, { attachTo: document.body, props: { modelValue: initial, id: 'expiration', ...props }, global: { stubs: { Transition: { inheritAttrs: false, template: '<slot />' } } } })
+}
+async function openPicker(wrapper: ReturnType<typeof mountPicker>) {
+  await wrapper.get('[data-testid="datetime-picker-trigger"]').trigger('click')
+  await flushPromises()
+  return getPanel()
+}
+async function chooseTime(part: 'hour' | 'minute', value: number) {
+  await getPanel().get(`[data-testid="datetime-picker-${part}"]`).trigger('click')
+  await getPanel().get(`[data-testid="datetime-picker-${part}-options"] [data-time-value="${value}"]`).trigger('click')
+}
+
+enableAutoUnmount(afterEach)
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2026, 9, 11, 10, 30, 20, 123))
+})
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+describe('DateTimePicker', () => {
+  it('uses a labeled button and a teleported calendar with six Monday-first weeks', async () => {
+    const wrapper = mountPicker()
+    const trigger = wrapper.get('[data-testid="datetime-picker-trigger"]')
+    expect(trigger.attributes('id')).toBe('expiration')
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    expect(trigger.attributes('aria-label')).toContain('14:25')
+    const panel = await openPicker(wrapper)
+    expect(panel.element.parentElement).toBe(document.body)
+    expect(panel.attributes('id')).toBe(trigger.attributes('aria-controls'))
+    expect(panel.findAll('[role="row"]')).toHaveLength(6)
+    expect(panel.findAll('[role="gridcell"]')).toHaveLength(42)
+    expect(panel.findAll('[data-date]')[0].attributes('data-date')).toBe('2026-09-28')
+    expect(panel.get('[data-date="2026-10-15"]').attributes('aria-selected')).toBe('true')
+    expect(panel.get('[data-date="2026-10-11"]').attributes('aria-current')).toBe('date')
+    expect(panel.find('input[type="date"], input[type="datetime-local"], input[type="time"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(panel.get('[data-date="2026-10-15"]').element)
+  })
+
+  it('keeps date edits in a draft and preserves time, seconds and milliseconds on confirmation', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-date="2026-10-20"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.get('[data-testid="datetime-picker-trigger"]').text()).toContain('Oct 15')
+    await panel.get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-20T14:25:37.125']])
+    expect(panelExists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="datetime-picker-trigger"]').element)
+  })
+
+  it.each(['cancel', 'escape', 'outside', 'toggle'])('discards unconfirmed edits when closed by %s', async (method) => {
+    const wrapper = mountPicker()
+    await openPicker(wrapper)
+    await getPanel().get('[data-date="2026-10-20"]').trigger('click')
+    if (method === 'cancel') await getPanel().get('[data-testid="datetime-picker-cancel"]').trigger('click')
+    else if (method === 'escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    else if (method === 'outside') document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    else await wrapper.get('[data-testid="datetime-picker-trigger"]').trigger('click')
+    await flushPromises()
+    expect(panelExists()).toBe(false)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    const panel = await openPicker(wrapper)
+    expect(panel.get('[data-date="2026-10-15"]').attributes('aria-selected')).toBe('true')
+  })
+
+  it('changes hours and minutes with custom lists while retaining seconds and milliseconds', async () => {
+    const wrapper = mountPicker()
+    await openPicker(wrapper)
+    await chooseTime('hour', 9)
+    await chooseTime('minute', 5)
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-15T09:05:37.125']])
+  })
+
+  it('jumps directly to a year and month without changing the value until a date is selected', async () => {
+    const wrapper = mountPicker()
+    await openPicker(wrapper)
+    await getPanel().get('[data-testid="datetime-picker-year"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-next"]').trigger('click')
+    await getPanel().get('[data-year="2030"]').trigger('click')
+    await getPanel().get('[data-month="1"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await getPanel().get('[data-date="2030-02-20"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2030-02-20T14:25:37.125']])
+  })
+
+  it('moves across a year boundary with month navigation and selects today without emitting early', async () => {
+    const wrapper = mountPicker({ modelValue: '2026-12-15T14:25:37.125' })
+    await openPicker(wrapper)
+    await getPanel().get('[data-testid="datetime-picker-next"]').trigger('click')
+    expect(getPanel().get('[data-testid="datetime-picker-year"]').text()).toContain('2027')
+    await getPanel().get('[data-testid="datetime-picker-today"]').trigger('click')
+    expect(getPanel().get('[data-date="2026-10-11"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-11T14:25:37.125']])
+  })
+
+  it('disables dates and month navigation outside the allowed range', async () => {
+    const wrapper = mountPicker({ min: '2026-10-11T12:30:37.125', max: '2026-10-20T17:45:37.125' })
+    const panel = await openPicker(wrapper)
+    expect(panel.get('[data-date="2026-10-10"]').attributes('disabled')).toBeDefined()
+    expect(panel.get('[data-date="2026-10-11"]').attributes('disabled')).toBeUndefined()
+    expect(panel.get('[data-date="2026-10-21"]').attributes('disabled')).toBeDefined()
+    expect(panel.get('[data-testid="datetime-picker-prev"]').attributes('disabled')).toBeDefined()
+    expect(panel.get('[data-testid="datetime-picker-next"]').attributes('disabled')).toBeDefined()
+    await panel.get('[data-testid="datetime-picker-year"]').trigger('click')
+    expect(panel.get('[data-year="2025"]').attributes('disabled')).toBeDefined()
+    expect(panel.get('[data-year="2026"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('enforces the minimum at millisecond precision and offers the nearest valid minute for an hour', async () => {
+    const wrapper = mountPicker({ min: '2026-10-11T12:30:37.126', max: '2026-10-20T17:45:37.125' })
+    await openPicker(wrapper)
+    await getPanel().get('[data-date="2026-10-11"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-hour"]').trigger('click')
+    expect(getPanel().get('[data-testid="datetime-picker-hour-options"] [data-time-value="11"]').attributes('disabled')).toBeDefined()
+    await getPanel().get('[data-testid="datetime-picker-hour-options"] [data-time-value="12"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-minute"]').trigger('click')
+    expect(getPanel().get('[data-testid="datetime-picker-minute-options"] [data-time-value="30"]').attributes('disabled')).toBeDefined()
+    expect(getPanel().get('[data-testid="datetime-picker-minute-options"] [data-time-value="31"]').attributes('disabled')).toBeUndefined()
+    await getPanel().get('[data-testid="datetime-picker-minute-options"] [data-time-value="31"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-11T12:31:37.125']])
+  })
+
+  it('allows the exact maximum time and disables minutes after it', async () => {
+    const wrapper = mountPicker({ max: '2026-10-20T17:45:37.125' })
+    await openPicker(wrapper)
+    await getPanel().get('[data-date="2026-10-20"]').trigger('click')
+    await chooseTime('hour', 17)
+    await getPanel().get('[data-testid="datetime-picker-minute"]').trigger('click')
+    expect(getPanel().get('[data-testid="datetime-picker-minute-options"] [data-time-value="46"]').attributes('disabled')).toBeDefined()
+    await getPanel().get('[data-testid="datetime-picker-minute-options"] [data-time-value="45"]').trigger('click')
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-20T17:45:37.125']])
+  })
+
+  it('prevents confirming an out-of-range draft and initializes an empty value within the bounds', async () => {
+    const wrapper = mountPicker({ min: '2026-10-15T16:00:00.000' })
+    await openPicker(wrapper)
+    expect(getPanel().get('[data-testid="datetime-picker-confirm"]').attributes('disabled')).toBeDefined()
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await getPanel().get('[data-testid="datetime-picker-cancel"]').trigger('click')
+    await wrapper.setProps({ modelValue: '' })
+    await openPicker(wrapper)
+    await getPanel().get('[data-testid="datetime-picker-confirm"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toEqual([['2026-10-15T16:00:00.000']])
+  })
+
+  it('does not open when disabled and closes when disabled during an edit', async () => {
+    const wrapper = mountPicker({ disabled: true })
+    await wrapper.get('[data-testid="datetime-picker-trigger"]').trigger('click')
+    expect(panelExists()).toBe(false)
+    await wrapper.setProps({ disabled: false })
+    await openPicker(wrapper)
+    await wrapper.setProps({ disabled: true })
+    expect(panelExists()).toBe(false)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  it('captures Escape before an outer BaseDialog and returns focus to the trigger', async () => {
+    const Host = defineComponent({ components: { BaseDialog, DateTimePicker }, template: '<BaseDialog :show="true" title="Adjust subscription"><DateTimePicker model-value="2026-10-15T14:25:37.125" /></BaseDialog>' })
+    const wrapper = mount(Host, { attachTo: document.body, global: { stubs: { Transition: { inheritAttrs: false, template: '<slot />' } } } })
+    await flushPromises()
+    const trigger = new DOMWrapper(document.querySelector<HTMLElement>('[data-testid="datetime-picker-trigger"]')!)
+    await trigger.trigger('click')
+    await flushPromises()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(panelExists()).toBe(false)
+    expect(wrapper.getComponent(BaseDialog).emitted('close')).toBeUndefined()
+    expect(document.activeElement).toBe(trigger.element)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(wrapper.getComponent(BaseDialog).emitted('close')).toHaveLength(1)
+  })
+
+  it('supports keyboard day navigation and keeps Tab focus within the panel', async () => {
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    await panel.get('[data-date="2026-10-15"]').trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(panel.get('[data-date="2026-10-22"]').element)
+    expect(panel.get('[data-date="2026-10-22"]').attributes('aria-selected')).toBe('true')
+    const confirmButton = panel.get<HTMLButtonElement>('[data-testid="datetime-picker-confirm"]')
+    confirmButton.element.focus()
+    await confirmButton.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(panel.get('[data-testid="datetime-picker-prev"]').element)
+  })
+
+  it('fits a narrow mobile viewport and repositions on resize and ancestor scrolling', async () => {
+    vi.stubGlobal('innerWidth', 320)
+    vi.stubGlobal('innerHeight', 700)
+    let rect = new DOMRect(230, 600, 70, 52)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => rect)
+    const wrapper = mountPicker()
+    const panel = await openPicker(wrapper)
+    expect(panel.element.style.left).toBe('12px')
+    expect(panel.element.style.width).toBe('296px')
+    expect(panel.element.style.bottom).toBe('108px')
+    vi.stubGlobal('innerWidth', 1440)
+    rect = new DOMRect(900, 100, 350, 52)
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(panel.element.style.left).toBe('890px')
+    expect(panel.element.style.top).toBe('160px')
+    rect = new DOMRect(800, 120, 350, 52)
+    document.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(panel.element.style.left).toBe('790px')
+    expect(panel.element.style.top).toBe('180px')
+  })
+})

@@ -660,7 +660,7 @@
     <BaseDialog
       :show="showExtendModal"
       :title="t('admin.subscriptions.adjustSubscription')"
-      width="narrow"
+      width="normal"
       @close="closeExtendModal"
     >
       <form
@@ -669,69 +669,67 @@
         @submit.prevent="handleExtendSubscription"
         class="space-y-5"
       >
-        <div class="rounded-lg bg-gray-50 p-4 dark:bg-dark-700">
-          <p class="text-sm text-gray-600 dark:text-gray-400">
-            {{ t('admin.subscriptions.adjustingFor') }}
-            <span class="font-medium text-gray-900 dark:text-white">{{
-              extendingSubscription.user?.email
-            }}</span>
-          </p>
-          <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
-            {{ t('admin.subscriptions.currentExpiration') }}:
-            <span class="font-medium text-gray-900 dark:text-white">
-              {{
-                extendingSubscription.expires_at
-                  ? formatDateTimeToMinute(extendingSubscription.expires_at)
-                  : t('admin.subscriptions.noExpiration')
-              }}
-            </span>
-          </p>
-          <p v-if="extendingSubscription.expires_at" class="mt-1 text-sm text-gray-600 dark:text-gray-400">
-            {{ t('admin.subscriptions.remainingDays') }}:
-            <span class="font-medium text-gray-900 dark:text-white">
-              {{ getDaysRemaining(extendingSubscription.expires_at) ?? 0 }}
-            </span>
-          </p>
+        <div class="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/80 p-4 dark:border-dark-600 dark:bg-dark-700/60">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-500 dark:border-dark-500 dark:bg-dark-800 dark:text-gray-400">
+            <Icon name="user" size="md" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ extendingSubscription.user?.email }}</p>
+            <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+              {{ t('admin.subscriptions.currentExpiration') }}
+              <span class="ml-1 font-medium tabular-nums text-gray-700 dark:text-gray-300">{{ extendingSubscription.expires_at ? formatDateTimeToMinute(extendingSubscription.expires_at) : t('admin.subscriptions.noExpiration') }}</span>
+            </p>
+          </div>
         </div>
-        <div>
-          <label class="input-label">{{ t('admin.subscriptions.adjustmentMode') }}</label>
-          <Select
-            v-model="extendForm.mode"
-            :options="adjustmentModeOptions"
-            :disabled="submitting"
+        <div class="rounded-xl bg-gray-100 p-1 dark:bg-dark-700">
+          <div
+            role="group"
+            class="grid grid-cols-2 gap-1"
             :aria-label="t('admin.subscriptions.adjustmentMode')"
             data-test="subscription-adjustment-mode"
-          />
-        </div>
-        <div v-if="extendForm.mode === 'date'" class="space-y-3">
-          <div>
-            <label for="subscription-expiration" class="input-label">{{ t('admin.subscriptions.expirationTime') }}</label>
-            <input
-              id="subscription-expiration"
-              v-model="extendForm.expires_at"
-              type="datetime-local"
-              step="0.001"
-              :min="minimumExpirationInput"
-              :max="maximumExpirationInput"
+          >
+            <button
+              v-for="option in adjustmentModeOptions"
+              :key="option.value"
+              type="button"
+              :aria-pressed="extendForm.mode === option.value"
               :disabled="submitting"
-              required
-              class="input"
-            />
+              :data-test="`subscription-mode-${option.value}`"
+              :class="['flex items-center justify-center gap-2 rounded-lg px-2 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50', extendForm.mode === option.value ? 'bg-white text-primary-600 shadow-sm dark:bg-dark-500 dark:text-primary-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200']"
+              @click="extendForm.mode = option.value"
+            >
+              <Icon :name="option.value === 'date' ? 'calendar' : 'arrowsUpDown'" size="sm" />
+              {{ option.label }}
+            </button>
           </div>
+        </div>
+        <div v-if="extendForm.mode === 'date'" class="space-y-5">
           <div>
             <p class="input-label">{{ t('admin.subscriptions.expirationShortcuts') }}</p>
-            <div class="flex flex-wrap gap-2">
+            <div class="grid grid-cols-4 gap-2">
               <button
                 v-for="days in expirationShortcutDays"
                 :key="days"
                 type="button"
-                class="btn btn-secondary btn-sm"
+                :class="['rounded-xl border py-3 text-sm font-semibold tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50', selectedExpirationShortcut === days ? 'border-primary-500 bg-primary-50 text-primary-700 ring-1 ring-primary-500 dark:bg-primary-500/10 dark:text-primary-300' : 'border-gray-200 bg-white text-gray-600 hover:border-primary-300 hover:bg-primary-50/50 dark:border-dark-500 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-primary-500/60 dark:hover:bg-primary-500/5']"
                 :disabled="submitting"
+                :aria-pressed="selectedExpirationShortcut === days"
                 :data-test="`subscription-expiration-${days}`"
                 @click="selectExpirationShortcut(days)"
               >{{ t('admin.subscriptions.expirationShortcutDays', { days }) }}</button>
             </div>
-            <p class="input-hint">{{ t('admin.subscriptions.expirationShortcutHint') }}</p>
+            <p class="mt-2 text-xs leading-5 text-gray-400 dark:text-gray-500">{{ t('admin.subscriptions.expirationShortcutHint') }}</p>
+          </div>
+          <div>
+            <label for="subscription-expiration" class="input-label">{{ t('admin.subscriptions.expirationTime') }}</label>
+            <DateTimePicker
+              id="subscription-expiration"
+              v-model="extendForm.expires_at"
+              :min="minimumExpirationInput"
+              :max="maximumExpirationInput"
+              :disabled="submitting"
+              @update:model-value="selectedExpirationShortcut = null"
+            />
           </div>
         </div>
         <div v-else>
@@ -752,11 +750,14 @@
           </div>
           <p class="input-hint">{{ t('admin.subscriptions.adjustHint') }}</p>
         </div>
-        <div class="rounded-lg bg-primary-50 p-3 text-sm dark:bg-primary-900/20" data-test="subscription-new-expiration">
-          <p class="text-gray-600 dark:text-gray-400">{{ t('admin.subscriptions.newExpiration') }}</p>
-          <time v-if="adjustedExpiration !== null" :datetime="new Date(adjustedExpiration).toISOString()" class="mt-1 block font-medium text-gray-900 dark:text-white">{{ formatDateTimeToMinute(new Date(adjustedExpiration)) }}</time>
-          <span v-else class="mt-1 block text-gray-500">—</span>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.subscriptions.expirationTimezoneHint', { timezone: browserTimeZone }) }}</p>
+        <div class="flex items-start gap-3 rounded-xl border border-primary-100 bg-primary-50/60 p-4 dark:border-primary-500/20 dark:bg-primary-500/5" data-test="subscription-new-expiration">
+          <Icon name="checkCircle" size="md" class="mt-0.5 shrink-0 text-primary-500" />
+          <div>
+            <p class="text-xs font-medium text-primary-700 dark:text-primary-300">{{ t('admin.subscriptions.newExpiration') }}</p>
+            <time v-if="adjustedExpiration !== null" :datetime="new Date(adjustedExpiration).toISOString()" class="mt-1.5 block text-lg font-semibold tabular-nums tracking-tight text-gray-900 dark:text-white">{{ formatDateTimeToMinute(new Date(adjustedExpiration)) }}</time>
+            <span v-else class="mt-1 block text-gray-500">—</span>
+            <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.subscriptions.expirationTimezoneHint', { timezone: browserTimeZone }) }}</p>
+          </div>
         </div>
       </form>
       <template #footer>
@@ -918,6 +919,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Select from '@/components/common/Select.vue'
+import DateTimePicker from '@/components/common/DateTimePicker.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1165,11 +1167,12 @@ const extendForm = reactive({
 const adjustmentNow = ref(Date.now())
 const browserTimeZone = getBrowserTimeZone()
 const expirationShortcutDays = [7, 30, 90, 365]
+const selectedExpirationShortcut = ref<number | null>(30)
 const minimumExpirationInput = computed(() => formatSubscriptionExpirationInput(adjustmentNow.value + 1))
 const maximumExpirationInput = formatSubscriptionExpirationInput(MAX_SUBSCRIPTION_EXPIRATION)
 const adjustmentModeOptions = computed(() => [
-  { value: 'date', label: t('admin.subscriptions.setExpiration') },
-  { value: 'days', label: t('admin.subscriptions.adjustByDays') }
+  { value: 'date' as const, label: t('admin.subscriptions.setExpiration') },
+  { value: 'days' as const, label: t('admin.subscriptions.adjustByDays') }
 ])
 const adjustedExpiration = computed(() => {
   if (extendForm.mode === 'date') return parseSubscriptionExpirationInput(extendForm.expires_at)
@@ -1475,6 +1478,7 @@ const selectExpirationShortcut = (days: number) => {
   adjustmentNow.value = Date.now()
   const expiration = subscriptionExpirationAfterDays(extendingSubscription.value?.expires_at, days, adjustmentNow.value)
   extendForm.expires_at = formatSubscriptionExpirationInput(expiration)
+  selectedExpirationShortcut.value = days
 }
 
 const closeExtendModal = () => {
