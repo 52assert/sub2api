@@ -356,12 +356,19 @@ async function onDayKeydown(event: KeyboardEvent, date: Date) {
 function updatePosition() {
   const rect = triggerRef.value?.getBoundingClientRect()
   if (!isOpen.value || !rect) return
+  const viewport = window.visualViewport
+  const viewportWidth = viewport?.width || document.documentElement.clientWidth || window.innerWidth
+  const viewportHeight = viewport?.height || document.documentElement.clientHeight || window.innerHeight
+  if (viewportWidth < 640) {
+    const offsetLeft = viewport?.offsetLeft ?? 0
+    const offsetTop = viewport?.offsetTop ?? 0
+    if (rect.bottom < offsetTop || rect.top > offsetTop + viewportHeight) { closePicker(); return }
+    panelStyle.value = { left: `${offsetLeft + 12}px`, top: `${offsetTop + 12}px`, width: `${Math.min(360, viewportWidth - 24)}px`, maxHeight: `${viewportHeight - 24}px` }
+    return
+  }
   if (rect.bottom < 0 || rect.top > window.innerHeight) { closePicker(); return }
   const position = getFloatingPanelPosition(rect, window.innerWidth, window.innerHeight, { viewportPadding: 12, maxWidth: 360, maxHeightRatio: 0.94, minComfortableHeight: 470, mobileBreakpoint: 640 })
-  const vertical: Record<string, string> = window.innerWidth < 640
-    ? { top: '12px', maxHeight: `${window.innerHeight - 24}px` }
-    : { maxHeight: `${position.maxHeight}px`, ...(position.top === null ? { bottom: `${position.bottom}px` } : { top: `${position.top}px` }) }
-  panelStyle.value = { left: `${position.left}px`, width: `${position.width}px`, ...vertical }
+  panelStyle.value = { left: `${position.left}px`, width: `${position.width}px`, maxHeight: `${position.maxHeight}px`, ...(position.top === null ? { bottom: `${position.bottom}px` } : { top: `${position.top}px` }) }
 }
 
 async function openPicker() {
@@ -408,12 +415,16 @@ onMounted(() => {
   document.addEventListener('keydown', onEscape, true)
   document.addEventListener('scroll', updatePosition, true)
   window.addEventListener('resize', updatePosition)
+  window.visualViewport?.addEventListener('resize', updatePosition)
+  window.visualViewport?.addEventListener('scroll', updatePosition)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onOutsidePointer, true)
   document.removeEventListener('keydown', onEscape, true)
   document.removeEventListener('scroll', updatePosition, true)
   window.removeEventListener('resize', updatePosition)
+  window.visualViewport?.removeEventListener('resize', updatePosition)
+  window.visualViewport?.removeEventListener('scroll', updatePosition)
 })
 </script>
 
