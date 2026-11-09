@@ -4,7 +4,14 @@
  */
 
 import { apiClient } from './client'
-import type { UserSubscription, SubscriptionProgress } from '@/types'
+import type {
+  Account,
+  AccountUsageInfo,
+  PaginatedResponse,
+  SubscriptionProgress,
+  UserSubscription,
+  WindowStats
+} from '@/types'
 
 /**
  * Subscription summary for user dashboard
@@ -67,10 +74,68 @@ export async function getSubscriptionProgress(
   return response.data
 }
 
+export type SubscriberAccountItem = Account
+
+export interface SubscriberAccountListFilters {
+  platform?: string
+  type?: string
+  status?: string
+  group?: string
+  search?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+}
+
+export async function listSubscriberAccounts(
+  page: number = 1,
+  pageSize: number = 20,
+  filters?: SubscriberAccountListFilters,
+  options?: { signal?: AbortSignal }
+): Promise<PaginatedResponse<Account>> {
+  const { data } = await apiClient.get<PaginatedResponse<Account>>('/subscriptions/accounts', {
+    params: {
+      page,
+      page_size: pageSize,
+      ...filters
+    },
+    signal: options?.signal
+  })
+  return data
+}
+
+export async function getSubscriberAccountsBatchTodayStats(
+  accountIds: number[]
+): Promise<{ stats: Record<string, WindowStats> }> {
+  const { data } = await apiClient.post<{ stats: Record<string, WindowStats> }>(
+    '/subscriptions/accounts/today-stats/batch',
+    { account_ids: accountIds }
+  )
+  return data
+}
+
+export async function getSubscriberAccountsBatchUsage(
+  accountIds: number[]
+): Promise<{
+  usage: Record<string, AccountUsageInfo | null>
+  errors?: Record<string, string>
+}> {
+  const { data } = await apiClient.post<{
+    usage: Record<string, AccountUsageInfo | null>
+    errors?: Record<string, string>
+  }>('/subscriptions/accounts/usage/batch', {
+    account_ids: accountIds,
+    force: false
+  })
+  return data
+}
+
 export default {
   getMySubscriptions,
   getActiveSubscriptions,
   getSubscriptionsProgress,
   getSubscriptionSummary,
-  getSubscriptionProgress
+  getSubscriptionProgress,
+  listSubscriberAccounts,
+  getSubscriberAccountsBatchTodayStats,
+  getSubscriberAccountsBatchUsage
 }

@@ -20,7 +20,7 @@
       color="emerald"
       data-testid="ollama-cloud-seven-day"
     />
-    <div v-if="state.configured" class="flex items-center pt-0.5">
+    <div v-if="state.configured && !readonly" class="flex items-center pt-0.5">
       <button
         type="button"
         class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -56,7 +56,9 @@ import { adminAPI } from '@/api/admin'
 import type { Account, OllamaCloudUsageState } from '@/types'
 import UsageProgressBar from './UsageProgressBar.vue'
 
-const props = defineProps<{ account: Account }>()
+const props = withDefaults(defineProps<{ account: Account; readonly?: boolean }>(), {
+  readonly: false
+})
 const emit = defineEmits<{ updated: [state: OllamaCloudUsageState] }>()
 const { t } = useI18n()
 const state = ref(props.account.ollama_cloud_usage)

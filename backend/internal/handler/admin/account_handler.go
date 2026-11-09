@@ -2802,6 +2802,48 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// SetSubscriberVisibleRequest represents the request body for setting subscriber visibility status
+type SetSubscriberVisibleRequest struct {
+	SubscriberVisible bool `json:"subscriber_visible"`
+}
+
+// SetSubscriberVisible handles toggling whether an account is visible to subscription members
+// POST /api/v1/admin/accounts/:id/subscriber-visible
+func (h *AccountHandler) SetSubscriberVisible(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req SetSubscriberVisibleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	if err := h.adminService.UpdateAccountExtra(c.Request.Context(), accountID, map[string]any{
+		service.SubscriberVisibleExtraKey: req.SubscriberVisible,
+	}); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if account != nil {
+		if account.Extra == nil {
+			account.Extra = make(map[string]any, 1)
+		}
+		account.Extra[service.SubscriberVisibleExtraKey] = req.SubscriberVisible
+	}
+
+	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
 // GetAvailableModels handles getting available models for an account
 // GET /api/v1/admin/accounts/:id/models
 func (h *AccountHandler) GetAvailableModels(c *gin.Context) {

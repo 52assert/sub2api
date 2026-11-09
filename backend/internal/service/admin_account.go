@@ -71,6 +71,16 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 
 const maxAccountNameRunes = 100
 const duplicateAccountOperationIDExtraKey = "duplicate_operation_id"
+const SubscriberVisibleExtraKey = "subscriber_visible"
+
+// IsAccountSubscriberVisible returns whether the account has subscriber visibility enabled.
+func IsAccountSubscriberVisible(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	v, ok := account.Extra[SubscriberVisibleExtraKey].(bool)
+	return ok && v
+}
 
 func duplicateAccountName(sourceName string) string {
 	const suffix = " (Copy)"
@@ -712,6 +722,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
+			}
+		}
+		if _, explicitlyProvided := input.Extra[SubscriberVisibleExtraKey]; !explicitlyProvided && account.Extra != nil {
+			if v, ok := account.Extra[SubscriberVisibleExtraKey]; ok {
+				normalizedExtra[SubscriberVisibleExtraKey] = v
 			}
 		}
 		normalizedExtra = prepareCodexFingerprintExtraForUpdate(account, normalizedExtra)

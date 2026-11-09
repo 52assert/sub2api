@@ -69,6 +69,11 @@ describe('AppSidebar subscription feature flag', () => {
     expect(componentSource).toMatch(/path: '\/subscriptions'[^\n]*featureFlag: flagSubscription/)
   })
 
+  it('gates the Shared Accounts entry behind active subscription access', () => {
+    expect(componentSource).toContain('const flagSubscriberAccounts = () => flagSubscription() !== false && canViewSubscriberAccounts.value')
+    expect(componentSource).toMatch(/path: '\/subscription-accounts'[^\n]*featureFlag: flagSubscriberAccounts/)
+  })
+
   it('also hides the admin Subscription Management entry on recharge-only sites', () => {
     expect(componentSource).toMatch(/path: '\/admin\/subscriptions'[^\n]*featureFlag: flagSubscription/)
   })

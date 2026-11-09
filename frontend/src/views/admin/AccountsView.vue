@@ -296,6 +296,17 @@
               <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
             </button>
           </template>
+          <template #cell-subscriber_visible="{ row }">
+            <button
+              @click="handleToggleSubscriberVisible(row)"
+              :disabled="togglingSubscriberVisible === row.id"
+              class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800"
+              :class="[isSubscriberVisible(row) ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']"
+              :title="isSubscriberVisible(row) ? t('admin.accounts.subscriberVisibleEnabled') : t('admin.accounts.subscriberVisibleDisabled')"
+            >
+              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[isSubscriberVisible(row) ? 'translate-x-4' : 'translate-x-0']" />
+            </button>
+          </template>
           <template #cell-today_stats="{ row }">
             <AccountTodayStatsCell
               :stats="todayStatsByAccountId[String(row.id)] ?? null"
@@ -631,6 +642,9 @@ const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
+const togglingSubscriberVisible = ref<number | null>(null)
+const isSubscriberVisible = (account: Pick<AccountListItem, 'extra'>): boolean =>
+  account.extra?.subscriber_visible === true
 const menu = reactive<{show:boolean, acc:Account|null, anchorRect:DOMRect|null}>({ show: false, acc: null, anchorRect: null })
 const exportingData = ref(false)
 const probingUpstreamBilling = reactive(new Set<number>())
@@ -1448,6 +1462,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.rate_limit_reset_at !== next.rate_limit_reset_at ||
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
+    Boolean(current.extra?.subscriber_visible) !== Boolean(next.extra?.subscriber_visible) ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
     buildGrokUsageRefreshKey(current) !== buildGrokUsageRefreshKey(next)
   )
@@ -1843,6 +1858,7 @@ const allColumns = computed(() => {
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
+    { key: 'subscriber_visible', label: t('admin.accounts.columns.subscriberVisible'), sortable: false },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
   ]
   if (!authStore.isSimpleMode) {
@@ -2529,6 +2545,32 @@ const handleToggleSchedulable = async (a: Account) => {
     appStore.showError(t('admin.accounts.failedToToggleSchedulable'))
   } finally {
     togglingSchedulable.value = null
+  }
+}
+const updateSubscriberVisibleInList = (accountId: number, subscriberVisible: boolean) => {
+  accounts.value = accounts.value.map((account) => {
+    if (account.id !== accountId) return account
+    const nextExtra: Record<string, unknown> = { ...(account.extra || {}) }
+    if (subscriberVisible) {
+      nextExtra.subscriber_visible = true
+    } else {
+      delete nextExtra.subscriber_visible
+    }
+    return { ...account, extra: nextExtra }
+  })
+}
+const handleToggleSubscriberVisible = async (a: Account) => {
+  const nextVisible = !isSubscriberVisible(a)
+  togglingSubscriberVisible.value = a.id
+  try {
+    const updated = await adminAPI.accounts.setSubscriberVisible(a.id, nextVisible)
+    updateSubscriberVisibleInList(a.id, updated?.extra?.subscriber_visible === true || nextVisible)
+    enterAutoRefreshSilentWindow()
+  } catch (error) {
+    console.error('Failed to toggle subscriber visibility:', error)
+    appStore.showError(t('admin.accounts.failedToToggleSubscriberVisible'))
+  } finally {
+    togglingSubscriberVisible.value = null
   }
 }
 const handleShowTempUnsched = (a: Account) => { tempUnschedAcc.value = a; showTempUnsched.value = true }

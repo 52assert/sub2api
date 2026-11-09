@@ -146,6 +146,9 @@ func RegisterUserRoutes(
 			subscriptions.GET("/active", h.Subscription.GetActive)
 			subscriptions.GET("/progress", h.Subscription.GetProgress)
 			subscriptions.GET("/summary", h.Subscription.GetSummary)
+			subscriptions.GET("/accounts", h.Subscription.ListSubscriberAccounts)
+			subscriptions.POST("/accounts/today-stats/batch", h.Subscription.GetSubscriberAccountsBatchTodayStats)
+			subscriptions.POST("/accounts/usage/batch", h.Subscription.GetSubscriberAccountsBatchUsage)
 		}
 
 		// 渠道监控（用户只读）

@@ -22,7 +22,7 @@
          buttons): a verb label tells users this chip is clickable. The previous
          noun label ("5h/weekly") read as a passive caption and users could not
          discover the manual refresh. -->
-    <div class="flex flex-wrap items-center gap-1.5">
+    <div v-if="!readonly" class="flex flex-wrap items-center gap-1.5">
       <button
         type="button"
         data-test="cn-provider-quota-probe"
@@ -68,9 +68,15 @@ import type { Account } from '@/types'
 import { cnQuotaCellVisible } from './credentialsBuilder'
 import UsageProgressBar from './UsageProgressBar.vue'
 
-const props = defineProps<{
-  account: Account
-}>()
+const props = withDefaults(
+  defineProps<{
+    account: Account
+    readonly?: boolean
+  }>(),
+  {
+    readonly: false
+  }
+)
 
 const { t } = useI18n()
 
@@ -131,7 +137,7 @@ const snapshotIsStale = computed(() => {
 onMounted(() => {
   if (!visible.value) return
   data.value = snapshotData.value
-  if (!snapshotIsStale.value) return
+  if (props.readonly || !snapshotIsStale.value) return
   // 模块级去抖：列表页每行一个实例，翻页/筛选/刷新会重复挂载；同一账号
   // 短时间内已自动探测过则跳过，避免对上游形成探测风暴。
   const last = lastAutoProbeAt.get(props.account.id) ?? 0

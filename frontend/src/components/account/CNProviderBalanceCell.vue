@@ -23,7 +23,7 @@
          buttons): the old chip doubled as the data display and a hidden click
          target, which users could not discover. The verb label makes the
          affordance explicit. -->
-    <div class="flex flex-wrap items-center gap-1.5">
+    <div v-if="!readonly" class="flex flex-wrap items-center gap-1.5">
       <button
         type="button"
         data-test="cn-provider-balance-probe"
@@ -65,9 +65,15 @@ import type { Account } from '@/types'
 import { platformTextClass } from '@/utils/platformColors'
 import { cnBalanceCellVisible } from './credentialsBuilder'
 
-const props = defineProps<{
-  account: Account
-}>()
+const props = withDefaults(
+  defineProps<{
+    account: Account
+    readonly?: boolean
+  }>(),
+  {
+    readonly: false
+  }
+)
 
 const { t } = useI18n()
 
