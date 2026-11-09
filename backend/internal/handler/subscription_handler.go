@@ -278,4 +278,3 @@ func (h *SubscriptionHandler) GetSubscriberAccountsBatchUsage(c *gin.Context) {
 	}
 	h.subscriberAccountProvider.GetSubscriberBatchUsage(c, allowedGroupIDs, isAdmin)
 }
-

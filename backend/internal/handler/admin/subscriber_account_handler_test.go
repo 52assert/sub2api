@@ -126,7 +126,8 @@ func TestSubscriberAccountHandler_FiltersAndRedactsSensitiveFields(t *testing.T)
 	groups, ok := item["groups"].([]any)
 	require.True(t, ok)
 	require.Len(t, groups, 1)
-	firstGroup := groups[0].(map[string]any)
+	firstGroup, ok := groups[0].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "VIP 订阅组", firstGroup["name"])
 
 	// Verify sensitive fields are strictly omitted

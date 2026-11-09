@@ -25,61 +25,61 @@ type SubscriberGroupRef struct {
 
 // SubscriberAccountItem represents a strictly redacted, read-only account view for subscription members.
 type SubscriberAccountItem struct {
-	ID                        int64                      `json:"id"`
-	Name                      string                     `json:"name"`
-	Platform                  string                     `json:"platform"`
-	Type                      string                     `json:"type"`
-	Credentials               map[string]any             `json:"credentials,omitempty"`
-	Extra                     map[string]any             `json:"extra,omitempty"`
+	ID                        int64                          `json:"id"`
+	Name                      string                         `json:"name"`
+	Platform                  string                         `json:"platform"`
+	Type                      string                         `json:"type"`
+	Credentials               map[string]any                 `json:"credentials,omitempty"`
+	Extra                     map[string]any                 `json:"extra,omitempty"`
 	OllamaCloudUsage          *service.OllamaCloudUsageState `json:"ollama_cloud_usage,omitempty"`
 	OpenCodeGoUsage           *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
-	Concurrency               int                        `json:"concurrency"`
-	LoadFactor                *int                       `json:"load_factor,omitempty"`
-	CurrentConcurrency        int                        `json:"current_concurrency"`
-	Status                    string                     `json:"status"`
-	Schedulable               bool                       `json:"schedulable"`
-	LastUsedAt                *time.Time                 `json:"last_used_at"`
-	ExpiresAt                 *int64                     `json:"expires_at"`
-	AutoPauseOnExpired        bool                       `json:"auto_pause_on_expired"`
-	CreatedAt                 time.Time                  `json:"created_at"`
-	UpdatedAt                 time.Time                  `json:"updated_at"`
-	RateLimitedAt             *time.Time                 `json:"rate_limited_at"`
-	RateLimitResetAt          *time.Time                 `json:"rate_limit_reset_at"`
-	OverloadUntil             *time.Time                 `json:"overload_until"`
-	TempUnschedulableUntil    *time.Time                 `json:"temp_unschedulable_until"`
-	SessionWindowStart        *time.Time                 `json:"session_window_start"`
-	SessionWindowEnd          *time.Time                 `json:"session_window_end"`
-	SessionWindowStatus       string                     `json:"session_window_status"`
-	WindowCostLimit           *float64                   `json:"window_cost_limit,omitempty"`
-	WindowCostStickyReserve   *float64                   `json:"window_cost_sticky_reserve,omitempty"`
-	CurrentWindowCost         *float64                   `json:"current_window_cost,omitempty"`
-	MaxSessions               *int                       `json:"max_sessions,omitempty"`
-	SessionIdleTimeoutMin     *int                       `json:"session_idle_timeout_minutes,omitempty"`
-	ActiveSessions            *int                       `json:"active_sessions,omitempty"`
+	Concurrency               int                            `json:"concurrency"`
+	LoadFactor                *int                           `json:"load_factor,omitempty"`
+	CurrentConcurrency        int                            `json:"current_concurrency"`
+	Status                    string                         `json:"status"`
+	Schedulable               bool                           `json:"schedulable"`
+	LastUsedAt                *time.Time                     `json:"last_used_at"`
+	ExpiresAt                 *int64                         `json:"expires_at"`
+	AutoPauseOnExpired        bool                           `json:"auto_pause_on_expired"`
+	CreatedAt                 time.Time                      `json:"created_at"`
+	UpdatedAt                 time.Time                      `json:"updated_at"`
+	RateLimitedAt             *time.Time                     `json:"rate_limited_at"`
+	RateLimitResetAt          *time.Time                     `json:"rate_limit_reset_at"`
+	OverloadUntil             *time.Time                     `json:"overload_until"`
+	TempUnschedulableUntil    *time.Time                     `json:"temp_unschedulable_until"`
+	SessionWindowStart        *time.Time                     `json:"session_window_start"`
+	SessionWindowEnd          *time.Time                     `json:"session_window_end"`
+	SessionWindowStatus       string                         `json:"session_window_status"`
+	WindowCostLimit           *float64                       `json:"window_cost_limit,omitempty"`
+	WindowCostStickyReserve   *float64                       `json:"window_cost_sticky_reserve,omitempty"`
+	CurrentWindowCost         *float64                       `json:"current_window_cost,omitempty"`
+	MaxSessions               *int                           `json:"max_sessions,omitempty"`
+	SessionIdleTimeoutMin     *int                           `json:"session_idle_timeout_minutes,omitempty"`
+	ActiveSessions            *int                           `json:"active_sessions,omitempty"`
 	BaseRPM                   *int                           `json:"base_rpm,omitempty"`
 	RPMStrategy               *string                        `json:"rpm_strategy,omitempty"`
 	RPMStickyBuffer           *int                           `json:"rpm_sticky_buffer,omitempty"`
-	CurrentRPM                *int                       `json:"current_rpm,omitempty"`
-	QuotaLimit                *float64                   `json:"quota_limit,omitempty"`
-	QuotaUsed                 *float64                   `json:"quota_used,omitempty"`
-	QuotaDailyLimit           *float64                   `json:"quota_daily_limit,omitempty"`
-	QuotaDailyUsed            *float64                   `json:"quota_daily_used,omitempty"`
-	QuotaWeeklyLimit          *float64                   `json:"quota_weekly_limit,omitempty"`
-	QuotaWeeklyUsed           *float64                   `json:"quota_weekly_used,omitempty"`
-	QuotaDailyResetMode       *string                    `json:"quota_daily_reset_mode,omitempty"`
-	QuotaDailyResetHour       *int                       `json:"quota_daily_reset_hour,omitempty"`
-	QuotaWeeklyResetMode      *string                    `json:"quota_weekly_reset_mode,omitempty"`
-	QuotaWeeklyResetDay       *int                       `json:"quota_weekly_reset_day,omitempty"`
-	QuotaWeeklyResetHour      *int                       `json:"quota_weekly_reset_hour,omitempty"`
-	QuotaResetTimezone        *string                    `json:"quota_reset_timezone,omitempty"`
-	QuotaDailyResetAt         *string                    `json:"quota_daily_reset_at,omitempty"`
-	QuotaWeeklyResetAt        *string                    `json:"quota_weekly_reset_at,omitempty"`
-	QuotaDimension            string                     `json:"quota_dimension,omitempty"`
-	ParentPlanType            string                     `json:"parent_plan_type,omitempty"`
-	ParentPrivacyMode         string                     `json:"parent_privacy_mode,omitempty"`
-	ParentSubscriptionExpires string                     `json:"parent_subscription_expires_at,omitempty"`
-	GroupIDs                  []int64                    `json:"group_ids,omitempty"`
-	Groups                    []*SubscriberGroupRef      `json:"groups,omitempty"`
+	CurrentRPM                *int                           `json:"current_rpm,omitempty"`
+	QuotaLimit                *float64                       `json:"quota_limit,omitempty"`
+	QuotaUsed                 *float64                       `json:"quota_used,omitempty"`
+	QuotaDailyLimit           *float64                       `json:"quota_daily_limit,omitempty"`
+	QuotaDailyUsed            *float64                       `json:"quota_daily_used,omitempty"`
+	QuotaWeeklyLimit          *float64                       `json:"quota_weekly_limit,omitempty"`
+	QuotaWeeklyUsed           *float64                       `json:"quota_weekly_used,omitempty"`
+	QuotaDailyResetMode       *string                        `json:"quota_daily_reset_mode,omitempty"`
+	QuotaDailyResetHour       *int                           `json:"quota_daily_reset_hour,omitempty"`
+	QuotaWeeklyResetMode      *string                        `json:"quota_weekly_reset_mode,omitempty"`
+	QuotaWeeklyResetDay       *int                           `json:"quota_weekly_reset_day,omitempty"`
+	QuotaWeeklyResetHour      *int                           `json:"quota_weekly_reset_hour,omitempty"`
+	QuotaResetTimezone        *string                        `json:"quota_reset_timezone,omitempty"`
+	QuotaDailyResetAt         *string                        `json:"quota_daily_reset_at,omitempty"`
+	QuotaWeeklyResetAt        *string                        `json:"quota_weekly_reset_at,omitempty"`
+	QuotaDimension            string                         `json:"quota_dimension,omitempty"`
+	ParentPlanType            string                         `json:"parent_plan_type,omitempty"`
+	ParentPrivacyMode         string                         `json:"parent_privacy_mode,omitempty"`
+	ParentSubscriptionExpires string                         `json:"parent_subscription_expires_at,omitempty"`
+	GroupIDs                  []int64                        `json:"group_ids,omitempty"`
+	Groups                    []*SubscriberGroupRef          `json:"groups,omitempty"`
 }
 
 func accountGroupIDsFromService(acc *service.Account) []int64 {
