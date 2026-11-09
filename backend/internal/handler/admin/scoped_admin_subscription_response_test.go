@@ -73,7 +73,7 @@ func (r *scopedSubscriptionRepo) ExtendExpiry(context.Context, int64, time.Time)
 	return nil
 }
 
-func TestScopedAdminSubscriptionExtendReplayRespectsReadPermission(t *testing.T) {
+func TestScopedAdminSubscriptionExtendReplayRejectsChangedAuthorization(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		body      string
@@ -103,15 +103,24 @@ func TestScopedAdminSubscriptionExtendReplayRespectsReadPermission(t *testing.T)
 				}
 			})
 			r.POST("/subscriptions/:id/extend", h.Extend)
-			for i, mode := range []string{tc.firstMode, "write", "read"} {
+			modes := []string{tc.firstMode, tc.firstMode, "write", "read"}
+			if tc.firstMode == "write" {
+				modes = []string{"write", "write", "admin", "read"}
+			}
+			for i, mode := range modes {
 				req := httptest.NewRequest("POST", "/subscriptions/1/extend", strings.NewReader(tc.body))
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Idempotency-Key", "same-extension")
 				req.Header.Set("X-Test-Mode", mode)
 				w := httptest.NewRecorder()
 				r.ServeHTTP(w, req)
+				if i > 1 {
+					require.Equal(t, 409, w.Code, w.Body.String())
+					require.NotContains(t, w.Body.String(), "private-user")
+					continue
+				}
 				require.Equal(t, 200, w.Code, w.Body.String())
-				if i > 0 {
+				if i == 1 {
 					require.Equal(t, "true", w.Header().Get("X-Idempotency-Replayed"))
 				}
 				var result struct {
