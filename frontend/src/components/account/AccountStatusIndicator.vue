@@ -15,7 +15,11 @@
     <!-- Main Status Badge (shown when not rate limited/overloaded) -->
     <template v-else>
       <div v-if="isTempUnschedulable" class="flex flex-col items-center gap-1">
+        <span v-if="readonly" :class="['badge text-xs', statusClass]">
+          {{ statusText }}
+        </span>
         <button
+          v-else
           type="button"
           :class="['badge text-xs', statusClass, 'cursor-pointer']"
           :title="t('admin.accounts.status.viewTempUnschedDetails')"
@@ -167,9 +171,15 @@ import { formatCountdown, formatDateTime, formatDateTimeToMinute, formatCountdow
 
 const { t } = useI18n()
 
-const props = defineProps<{
-  account: Account
-}>()
+const props = withDefaults(
+  defineProps<{
+    account: Account
+    readonly?: boolean
+  }>(),
+  {
+    readonly: false
+  }
+)
 
 const emit = defineEmits<{
   (e: 'show-temp-unsched', account: Account): void

@@ -212,6 +212,9 @@ func ProvideHandlers(
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
 ) *Handlers {
+	if subscriptionHandler != nil && adminHandlers != nil && adminHandlers.Account != nil {
+		subscriptionHandler.SetSubscriberAccountProvider(adminHandlers.Account)
+	}
 	return &Handlers{
 		IntelligenceTest: intelligenceTestHandler,
 		Auth:             authHandler,

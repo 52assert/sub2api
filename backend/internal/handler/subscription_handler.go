@@ -30,9 +30,17 @@ type SubscriptionProgressInfo struct {
 	Progress     *service.SubscriptionProgress `json:"progress"`
 }
 
+// SubscriberAccountProvider provides read-only, redacted subscriber account views.
+type SubscriberAccountProvider interface {
+	ListSubscriberAccounts(c *gin.Context, allowedGroupIDs map[int64]struct{}, groupNames map[int64]string, isAdmin bool)
+	GetSubscriberBatchTodayStats(c *gin.Context, allowedGroupIDs map[int64]struct{}, isAdmin bool)
+	GetSubscriberBatchUsage(c *gin.Context, allowedGroupIDs map[int64]struct{}, isAdmin bool)
+}
+
 // SubscriptionHandler handles user subscription operations
 type SubscriptionHandler struct {
-	subscriptionService *service.SubscriptionService
+	subscriptionService       *service.SubscriptionService
+	subscriberAccountProvider SubscriberAccountProvider
 }
 
 // NewSubscriptionHandler creates a new user subscription handler
@@ -40,6 +48,14 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 	return &SubscriptionHandler{
 		subscriptionService: subscriptionService,
 	}
+}
+
+// SetSubscriberAccountProvider wires the read-only subscriber account provider.
+func (h *SubscriptionHandler) SetSubscriberAccountProvider(provider SubscriberAccountProvider) {
+	if h == nil {
+		return
+	}
+	h.subscriberAccountProvider = provider
 }
 
 // List handles listing current user's subscriptions
@@ -189,3 +205,77 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 
 	response.Success(c, summary)
 }
+
+func (h *SubscriptionHandler) resolveSubscriberAllowedGroups(c *gin.Context) (map[int64]struct{}, map[int64]string, bool, bool) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not found in context")
+		return nil, nil, false, false
+	}
+
+	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, nil, false, false
+	}
+
+	allowedGroupIDs := make(map[int64]struct{}, len(subscriptions))
+	groupNames := make(map[int64]string, len(subscriptions))
+	acceptLang := c.GetHeader("Accept-Language")
+	for i := range subscriptions {
+		sub := &subscriptions[i]
+		if sub.GroupID <= 0 {
+			continue
+		}
+		allowedGroupIDs[sub.GroupID] = struct{}{}
+		if sub.Group != nil {
+			groupNames[sub.GroupID] = sub.Group.I18n.LocalizeName(acceptLang, sub.Group.Name)
+		}
+	}
+
+	role, _ := middleware2.GetUserRoleFromContext(c)
+	return allowedGroupIDs, groupNames, role == service.RoleAdmin, true
+}
+
+// ListSubscriberAccounts handles listing redacted shared accounts visible to current subscriber
+// GET /api/v1/subscriptions/accounts
+func (h *SubscriptionHandler) ListSubscriberAccounts(c *gin.Context) {
+	if h == nil || h.subscriberAccountProvider == nil {
+		response.Paginated(c, []any{}, 0, 1, 20)
+		return
+	}
+	allowedGroupIDs, groupNames, isAdmin, ok := h.resolveSubscriberAllowedGroups(c)
+	if !ok {
+		return
+	}
+	h.subscriberAccountProvider.ListSubscriberAccounts(c, allowedGroupIDs, groupNames, isAdmin)
+}
+
+// GetSubscriberAccountsBatchTodayStats handles getting today's stats for subscriber-visible accounts
+// POST /api/v1/subscriptions/accounts/today-stats/batch
+func (h *SubscriptionHandler) GetSubscriberAccountsBatchTodayStats(c *gin.Context) {
+	if h == nil || h.subscriberAccountProvider == nil {
+		response.Success(c, gin.H{"stats": map[string]any{}})
+		return
+	}
+	allowedGroupIDs, _, isAdmin, ok := h.resolveSubscriberAllowedGroups(c)
+	if !ok {
+		return
+	}
+	h.subscriberAccountProvider.GetSubscriberBatchTodayStats(c, allowedGroupIDs, isAdmin)
+}
+
+// GetSubscriberAccountsBatchUsage handles getting passive usage windows for subscriber-visible accounts
+// POST /api/v1/subscriptions/accounts/usage/batch
+func (h *SubscriptionHandler) GetSubscriberAccountsBatchUsage(c *gin.Context) {
+	if h == nil || h.subscriberAccountProvider == nil {
+		response.Success(c, gin.H{"usage": map[string]any{}, "errors": map[string]string{}})
+		return
+	}
+	allowedGroupIDs, _, isAdmin, ok := h.resolveSubscriberAllowedGroups(c)
+	if !ok {
+		return
+	}
+	h.subscriberAccountProvider.GetSubscriberBatchUsage(c, allowedGroupIDs, isAdmin)
+}
+

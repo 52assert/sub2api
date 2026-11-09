@@ -88,7 +88,7 @@
         while usage is still loading survives the usage response. The local query
         button shares its row once usage data exists.
       -->
-      <ClaudeResetCreditsCell :account="account" class="mt-1" @redeemed="loadActiveUsage">
+      <ClaudeResetCreditsCell v-if="!readonly" :account="account" class="mt-1" @redeemed="loadActiveUsage">
         <template v-if="usageInfo" #pre-actions>
           <span
             v-if="usageInfo.source === 'passive'"
@@ -120,6 +120,12 @@
           </button>
         </template>
       </ClaudeResetCreditsCell>
+      <div
+        v-else-if="usageInfo?.source === 'passive'"
+        class="mt-1 text-[9px] text-gray-400 dark:text-gray-500 italic"
+      >
+        {{ t('admin.accounts.usageWindow.passiveSampled') }}
+      </div>
     </template>
 
     <!-- OpenAI OAuth accounts: single source from /usage API -->
@@ -149,7 +155,11 @@
           refresh button is rendered via the pre-actions slot so the user sees a
           single row of related buttons instead of two stacked rows.
         -->
-        <OpenAIQuotaResetCell :account="account" @account-updated="handleQuotaResetAccountUpdated">
+        <OpenAIQuotaResetCell
+          v-if="!readonly"
+          :account="account"
+          @account-updated="handleQuotaResetAccountUpdated"
+        >
           <template #pre-actions>
             <button
               type="button"
@@ -192,6 +202,7 @@
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
+          v-if="!readonly"
           :account="account"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
@@ -245,7 +256,7 @@
         >
           {{ forbiddenLabel }}
         </span>
-        <div v-if="validationURL" class="flex items-center gap-1">
+        <div v-if="validationURL && !readonly" class="flex items-center gap-1">
           <a
             :href="validationURL"
             target="_blank"
@@ -445,11 +456,11 @@
         <div v-if="grokRetryAfterLabel" class="text-[10px] text-amber-600 dark:text-amber-400">
           {{ t('admin.accounts.usageWindow.grokRetryAfter', { time: grokRetryAfterLabel }) }}
         </div>
-        <GrokQuotaProbeCell :account="account" compact @probed="handleGrokProbed" />
+        <GrokQuotaProbeCell v-if="!readonly" :account="account" compact @probed="handleGrokProbed" />
       </div>
       <div v-else class="space-y-1">
         <div class="text-xs text-gray-400">-</div>
-        <GrokQuotaProbeCell :account="account" compact @probed="handleGrokProbed" />
+        <GrokQuotaProbeCell v-if="!readonly" :account="account" compact @probed="handleGrokProbed" />
       </div>
     </template>
 
@@ -463,6 +474,7 @@
       <OllamaCloudUsageCell
         v-if="account.ollama_cloud_usage?.eligible"
         :account="account"
+        :readonly="readonly"
         @updated="handleOllamaCloudUsageUpdated"
       />
       <!-- 挂在 CN 平台下的 OpenCode Go 账号（资格由后端下发 eligible）：用量展示与
@@ -477,6 +489,7 @@
       <OpenCodeGoUsageCell
         v-else-if="account.opencode_go_usage?.eligible"
         :account="account"
+        :readonly="readonly"
         @updated="handleOpenCodeGoUsageUpdated"
       />
       <div v-else class="space-y-1">
@@ -487,8 +500,8 @@
           class="text-xs text-gray-400"
           :title="t('admin.accounts.cnProviders.noBalanceEndpoint')"
         >-</div>
-        <CNProviderQuotaCell :account="account" />
-        <CNProviderBalanceCell :account="account" />
+        <CNProviderQuotaCell :account="account" :readonly="readonly" />
+        <CNProviderBalanceCell :account="account" :readonly="readonly" />
       </div>
     </template>
 
@@ -641,6 +654,7 @@
       <OllamaCloudUsageCell
         v-if="account.ollama_cloud_usage?.eligible"
         :account="account"
+        :readonly="readonly"
         @updated="handleOllamaCloudUsageUpdated"
       />
       <!-- 与上方 CN 分支结构对齐：Ollama 与 OpenCode 用量身份互斥（基址 host 不同），
@@ -648,6 +662,7 @@
       <OpenCodeGoUsageCell
         v-else-if="account.opencode_go_usage?.eligible"
         :account="account"
+        :readonly="readonly"
         @updated="handleOpenCodeGoUsageUpdated"
       />
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
@@ -754,6 +769,7 @@ const props = withDefaults(
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
     requestBatchedUsage?: ((account: Account, options?: { force?: boolean }) => void) | null
+    readonly?: boolean
   }>(),
   {
     todayStats: null,
@@ -762,7 +778,8 @@ const props = withDefaults(
     batchedUsage: null,
     batchedUsageError: null,
     batchedUsageLoading: false,
-    requestBatchedUsage: null
+    requestBatchedUsage: null,
+    readonly: false
   }
 )
 

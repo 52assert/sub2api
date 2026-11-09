@@ -1134,6 +1134,13 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
   return data
 }
 
+export async function setSubscriberVisible(id: number, subscriberVisible: boolean): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/subscriber-visible`, {
+    subscriber_visible: subscriberVisible
+  })
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -1162,6 +1169,7 @@ export const accountsAPI = {
   getTempUnschedulableStatus,
   resetTempUnschedulable,
   setSchedulable,
+  setSubscriberVisible,
   getAvailableModels,
   syncUpstreamModels,
   syncUpstreamModelsPreview,
