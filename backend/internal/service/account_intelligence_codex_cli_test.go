@@ -3,11 +3,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,9 +19,38 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+type intelligenceCLIUpstreamCapture struct {
+	requests  []*http.Request
+	proxyURLs []string
+	responses []*http.Response
+}
+
+func (u *intelligenceCLIUpstreamCapture) Do(req *http.Request, proxyURL string, _ int64, _ int) (*http.Response, error) {
+	u.requests = append(u.requests, req)
+	u.proxyURLs = append(u.proxyURLs, proxyURL)
+	if len(u.responses) > 0 {
+		resp := u.responses[0]
+		u.responses = u.responses[1:]
+		return resp, nil
+	}
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","model":"gpt-5.4","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":5,"output_tokens":2}}`)),
+	}, nil
+}
+
+func (u *intelligenceCLIUpstreamCapture) DoWithTLS(req *http.Request, proxyURL string, accountID int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, concurrency)
+}
 
 type intelligenceCLIAccounts struct {
 	AccountRepository
@@ -39,6 +71,7 @@ func intelligenceCLITestToken(accountID string) string {
 
 func intelligenceCLITestService(t *testing.T, account *Account, body string) (*AccountTestService, string) {
 	t.Helper()
+	gin.SetMode(gin.TestMode)
 	fixture := t.TempDir()
 	cliPath := filepath.Join(fixture, "codex")
 	// The fixture captures only synthetic credentials, and never contacts upstream.
@@ -88,20 +121,24 @@ func TestIntelligenceCodexCLIUsesSelectedAccountMappedModelAndOriginalPrompt(t *
 	require.NoError(t, err)
 	require.Contains(t, string(args), "--model\ngpt-5.4\n")
 	require.Contains(t, string(args), `model_reasoning_effort="high"`)
+	require.Contains(t, string(args), `model_provider="intelligence_test"`)
+	require.Contains(t, string(args), `wire_api="responses"`)
+	require.Contains(t, string(args), `base_url="http://127.0.0.1:`)
 	require.Contains(t, string(args), "--ignore-user-config")
 	require.Contains(t, string(args), "--ignore-rules")
 	require.Contains(t, string(args), "shell_environment_policy.inherit=\"none\"")
 	auth, err := os.ReadFile(filepath.Join(fixture, "auth"))
 	require.NoError(t, err)
-	require.Contains(t, string(auth), `"auth_mode":"chatgptAuthTokens"`)
-	require.Contains(t, string(auth), `"account_id":"selected-chatgpt-account"`)
-	require.Contains(t, string(auth), `"id_token":"`+token+`"`)
-	require.Contains(t, string(auth), `"refresh_token":""`)
+	require.Contains(t, string(auth), `"auth_mode":"apikey"`)
+	require.Contains(t, string(auth), `"OPENAI_API_KEY":"sk-sub2api-cli-`)
+	require.NotContains(t, string(auth), token)
+	require.NotContains(t, string(auth), "selected-chatgpt-account")
 	require.NotContains(t, string(auth), "must-not-export-refresh")
 	env, err := os.ReadFile(filepath.Join(fixture, "env"))
 	require.NoError(t, err)
 	require.NotContains(t, string(env), "must-not-inherit")
 	require.Contains(t, string(env), "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_cli_rs")
+	require.Contains(t, string(env), "NO_PROXY=127.0.0.1,localhost")
 	home, err := os.ReadFile(filepath.Join(fixture, "home"))
 	require.NoError(t, err)
 	_, err = os.Stat(string(home))
@@ -116,10 +153,12 @@ func TestIntelligenceCodexCLIUsesResponsesAPIKeyProvider(t *testing.T) {
 	require.Equal(t, "gpt-5.4", result.EffectiveModel)
 	auth, err := os.ReadFile(filepath.Join(fixture, "auth"))
 	require.NoError(t, err)
-	require.Contains(t, string(auth), `"OPENAI_API_KEY":"synthetic-api-key"`)
+	require.Contains(t, string(auth), `"OPENAI_API_KEY":"sk-sub2api-cli-`)
+	require.NotContains(t, string(auth), "synthetic-api-key")
 	args, err := os.ReadFile(filepath.Join(fixture, "args"))
 	require.NoError(t, err)
-	require.Contains(t, string(args), `base_url="https://api.example.invalid/v1"`)
+	require.Contains(t, string(args), `base_url="http://127.0.0.1:`)
+	require.NotContains(t, string(args), "api.example.invalid")
 	require.Contains(t, string(args), `wire_api="responses"`)
 	require.NotContains(t, string(args), "synthetic-api-key")
 	require.NotContains(t, string(args), "model_reasoning_effort=")
@@ -128,7 +167,8 @@ func TestIntelligenceCodexCLIUsesResponsesAPIKeyProvider(t *testing.T) {
 func TestIntelligenceCodexCLIShadowUsesParentAuthAndSelectedMappingAndProxy(t *testing.T) {
 	parentID := int64(19)
 	proxyID := int64(7)
-	parent := &Account{ID: parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": intelligenceCLITestToken("parent-chatgpt-id")}}
+	parentToken := intelligenceCLITestToken("parent-chatgpt-id")
+	parent := &Account{ID: parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": parentToken}}
 	shadow := &Account{ID: 20, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parentID,
 		Credentials: map[string]any{"model_mapping": map[string]any{"animation": "gpt-5.4"}},
 		ProxyID:     &proxyID, Proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "proxy.example.invalid", Port: 8080}}
@@ -139,10 +179,45 @@ func TestIntelligenceCodexCLIShadowUsesParentAuthAndSelectedMappingAndProxy(t *t
 	require.Equal(t, "gpt-5.4", result.EffectiveModel)
 	auth, err := os.ReadFile(filepath.Join(fixture, "auth"))
 	require.NoError(t, err)
-	require.Contains(t, string(auth), `"account_id":"parent-chatgpt-id"`)
+	require.Contains(t, string(auth), `"auth_mode":"apikey"`)
+	require.Contains(t, string(auth), `"OPENAI_API_KEY":"sk-sub2api-cli-`)
+	require.NotContains(t, string(auth), "parent-chatgpt-id")
+	require.NotContains(t, string(auth), parentToken)
 	env, err := os.ReadFile(filepath.Join(fixture, "env"))
 	require.NoError(t, err)
-	require.Contains(t, string(env), "HTTPS_PROXY=http://proxy.example.invalid:8080")
+	require.NotContains(t, string(env), "proxy.example.invalid")
+	require.Contains(t, string(env), "NO_PROXY=127.0.0.1,localhost")
+
+	// Verify the loopback server forwards shadow OAuth requests through Sub2API with parent credentials and shadow proxy.
+	upstream := &intelligenceCLIUpstreamCapture{}
+	svc.httpUpstream = upstream
+	forwardAccount := buildIntelligenceCLIForwardAccount(shadow, parent, parentToken, "parent-chatgpt-id")
+	ephemeralKey := "sk-sub2api-cli-shadow-test"
+	loopbackBaseURL, server, err := svc.startIntelligenceCLILoopbackServer(forwardAccount, ephemeralKey)
+	require.NoError(t, err)
+	defer func() { _ = server.Close() }()
+
+	unauthReq, err := http.NewRequest(http.MethodPost, loopbackBaseURL+"/responses", bytes.NewReader([]byte(`{"model":"gpt-5.4","stream":false,"input":"hi"}`)))
+	require.NoError(t, err)
+	unauthReq.Header.Set("Authorization", "Bearer wrong-token")
+	unauthResp, err := http.DefaultClient.Do(unauthReq)
+	require.NoError(t, err)
+	_ = unauthResp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, unauthResp.StatusCode)
+	require.Empty(t, upstream.requests)
+
+	req, err := http.NewRequest(http.MethodPost, loopbackBaseURL+"/responses", bytes.NewReader([]byte(`{"model":"gpt-5.4","stream":false,"input":"hi"}`)))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+ephemeralKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "Bearer "+parentToken, upstream.requests[0].Header.Get("Authorization"))
+	require.Equal(t, "parent-chatgpt-id", upstream.requests[0].Header.Get("Chatgpt-Account-Id"))
+	require.Equal(t, "http://proxy.example.invalid:8080", upstream.proxyURLs[0])
 }
 
 func TestIntelligenceCodexCLIRejectsFailedOrIncompleteSuccessfulExit(t *testing.T) {
@@ -309,7 +384,7 @@ func TestIntelligenceCodexCLIVersionIgnoresStartupWarnings(t *testing.T) {
 func TestIntelligenceCodexCLICancellationCleansTask(t *testing.T) {
 	account := &Account{ID: 15, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-api-key"}}
 	svc, fixture := intelligenceCLITestService(t, account, "sleep 30 &\nprintf '%s' \"$!\" > \"$capture/child\"\nwait\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := svc.RunIntelligenceTestDetailed(ctx, account.ID, "gpt-5.4", "animation", "default", IntelligenceTestRunnerCodex)
