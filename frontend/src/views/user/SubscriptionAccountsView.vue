@@ -92,11 +92,11 @@
       </template>
 
       <template #table>
-        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden" :aria-busy="loading" :inert="loading && accounts.length > 0">
           <DataTable
             :columns="allColumns"
             :data="accounts"
-            :loading="loading"
+            :loading="loading && accounts.length === 0"
             row-key="id"
             :server-side-sort="true"
             @sort="handleSort"

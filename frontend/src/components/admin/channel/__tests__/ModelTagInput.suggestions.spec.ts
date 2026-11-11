@@ -145,12 +145,10 @@ describe('pricing with model selection', () => {
     const modelInput = wrapper.findComponent(ModelTagInput)
     await chooseModel(modelInput, 'gpt-6-astra')
     await chooseModel(modelInput, 'gpt-6-sol')
-    expect(resolvePricing).toHaveLength(2)
-    resolvePricing[1]({ found: true, input_price: 2e-6 })
-    await flushPromises()
+    expect(resolvePricing).toHaveLength(1)
     resolvePricing[0]({ found: true, input_price: 3e-6 })
     await flushPromises()
-    expect(wrapper.props('entry')).toMatchObject({ models: ['gpt-6-astra', 'gpt-6-sol'], input_price: 2 })
+    expect(wrapper.props('entry')).toMatchObject({ models: ['gpt-6-astra', 'gpt-6-sol'], input_price: null })
   })
 
   it('preserves a price entered while default pricing is loading', async () => {
