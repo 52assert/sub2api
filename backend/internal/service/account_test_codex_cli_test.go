@@ -82,8 +82,9 @@ func TestAccountConnectionUsesCodexCLIWithSelectedModelAndPrompt(t *testing.T) {
 func TestAccountConnectionCodexCLIUsesParentCredentialsAndShadowMapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	parentID := int64(31)
+	parentToken := intelligenceCLITestToken("parent-chatgpt-id")
 	parent := &Account{ID: parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-		Credentials: map[string]any{"access_token": intelligenceCLITestToken("parent-chatgpt-id")}}
+		Credentials: map[string]any{"access_token": parentToken}}
 	shadow := &Account{ID: 32, ParentAccountID: &parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
 		Credentials: map[string]any{"model_mapping": map[string]any{"selected": "gpt-5.4"}}}
 	svc, fixture := intelligenceCLITestService(t, shadow, accountCLISuccessScript)
@@ -94,10 +95,14 @@ func TestAccountConnectionCodexCLIUsesParentCredentialsAndShadowMapping(t *testi
 	require.Contains(t, recorder.Body.String(), `"success":true`)
 	auth, err := os.ReadFile(filepath.Join(fixture, "auth"))
 	require.NoError(t, err)
-	require.Contains(t, string(auth), `"account_id":"parent-chatgpt-id"`)
+	require.Contains(t, string(auth), `"auth_mode":"apikey"`)
+	require.Contains(t, string(auth), `"OPENAI_API_KEY":"sk-sub2api-cli-`)
+	require.NotContains(t, string(auth), "parent-chatgpt-id")
+	require.NotContains(t, string(auth), parentToken)
 	args, err := os.ReadFile(filepath.Join(fixture, "args"))
 	require.NoError(t, err)
 	require.Contains(t, string(args), "--model\ngpt-5.4\n")
+	require.Contains(t, string(args), `base_url="http://127.0.0.1:`)
 }
 
 func TestAccountConnectionCodexCLIFailureNeverFallsBackToHTTP(t *testing.T) {

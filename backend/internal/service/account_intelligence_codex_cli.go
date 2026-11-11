@@ -6,12 +6,16 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,10 +27,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -87,7 +96,7 @@ func (s *AccountTestService) intelligenceCLICredentialAccount(ctx context.Contex
 		return nil, errors.New("codex CLI 测试需要账号使用 Responses 协议")
 	}
 	if credential.Type == AccountTypeOAuth {
-		if _, err := intelligenceCLIAuthJSON(credential, credential.GetOpenAIAccessToken()); err != nil {
+		if _, err := intelligenceCLIOAuthAccountID(credential, credential.GetOpenAIAccessToken()); err != nil {
 			return nil, errors.New("codex CLI 测试需要包含有效身份信息的 OAuth 凭据")
 		}
 	} else if strings.TrimSpace(credential.GetOpenAIProtocolAPIKey()) == "" {
@@ -122,11 +131,14 @@ func (s *AccountTestService) intelligenceCLISandboxAvailable(ctx context.Context
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, path, "--check")
-	cmd.Env = intelligenceCLIEnvironment("", "")
+	cmd.Env = intelligenceCLIEnvironment("")
 	configureIntelligenceCLIProcess(cmd)
 	output := &intelligenceCLIBoundedBuffer{limit: 4096, cancel: cancel}
 	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Run(); err != nil {
+		if checkCtx.Err() != nil {
+			return checkCtx.Err()
+		}
 		return errors.New("codex test sandbox is not supported by this server")
 	}
 	terminateIntelligenceCLIChildren(cmd)
@@ -150,7 +162,7 @@ func (s *AccountTestService) intelligenceCLIVersion(ctx context.Context) (string
 	}
 	defer func() { _ = os.RemoveAll(versionDir) }()
 	cmd := exec.CommandContext(versionCtx, cliPath, "--version")
-	cmd.Env = intelligenceCLIEnvironment(versionDir, "")
+	cmd.Env = intelligenceCLIEnvironment(versionDir)
 	configureIntelligenceCLIProcess(cmd)
 	output := &intelligenceCLIBoundedBuffer{limit: 4096, cancel: cancel}
 	stderr := &intelligenceCLIBoundedBuffer{limit: intelligenceCLIStderrLimit, cancel: cancel}
@@ -210,6 +222,7 @@ func (s *AccountTestService) runCodexCLIIntelligenceTest(ctx context.Context, ac
 		return result, err
 	}
 	token := credential.GetOpenAIProtocolAPIKey()
+	chatgptAccountID := ""
 	if credential.Type == AccountTypeOAuth {
 		if s.openaiGatewayService != nil {
 			token, _, err = s.openaiGatewayService.GetAccessToken(ctx, account)
@@ -219,8 +232,30 @@ func (s *AccountTestService) runCodexCLIIntelligenceTest(ctx context.Context, ac
 		} else {
 			token = credential.GetOpenAIAccessToken()
 		}
+		chatgptAccountID, err = intelligenceCLIOAuthAccountID(credential, token)
+		if err != nil {
+			return result, err
+		}
+	} else {
+		if strings.TrimSpace(token) == "" {
+			return result, errors.New("codex CLI account credential is missing")
+		}
+		baseURL := credential.GetOpenAIBaseURL()
+		if baseURL == "" {
+			baseURL = "https://api.openai.com"
+		}
+		if _, err := s.validateUpstreamBaseURL(baseURL); err != nil {
+			return result, errors.New("invalid Codex CLI upstream URL")
+		}
 	}
-	authJSON, err := intelligenceCLIAuthJSON(credential, token)
+	forwardAccount := buildIntelligenceCLIForwardAccount(account, credential, token, chatgptAccountID)
+	ephemeralKey := "sk-sub2api-cli-" + uuid.NewString() + strings.ReplaceAll(uuid.NewString(), "-", "")
+	loopbackBaseURL, loopbackServer, err := s.startIntelligenceCLILoopbackServer(forwardAccount, ephemeralKey)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = loopbackServer.Close() }()
+	authJSON, err := intelligenceCLILocalAuthJSON(ephemeralKey)
 	if err != nil {
 		return result, err
 	}
@@ -251,29 +286,21 @@ func (s *AccountTestService) runCodexCLIIntelligenceTest(ctx context.Context, ac
 	if effort != "" && effort != "default" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(effort))
 	}
-	if credential.Type == AccountTypeAPIKey {
-		baseURL := credential.GetOpenAIBaseURL()
-		if baseURL == "" {
-			baseURL = "https://api.openai.com"
-		}
-		baseURL, err = s.validateUpstreamBaseURL(baseURL)
-		if err != nil {
-			return result, errors.New("invalid Codex CLI upstream URL")
-		}
-		baseURL = strings.TrimSuffix(buildOpenAIResponsesURLForPlatform(PlatformOpenAI, baseURL), "/responses")
-		args = append(args, "-c", `model_provider="intelligence_test"`, "-c", "model_providers.intelligence_test="+`{name="Intelligence test",wire_api="responses",requires_openai_auth=true,supports_websockets=false,base_url=`+strconv.Quote(baseURL)+`}`)
-	}
-	args = append(args, "-")
+	args = append(args,
+		"-c", `model_provider="intelligence_test"`,
+		"-c", "model_providers.intelligence_test="+`{name="Sub2API",wire_api="responses",requires_openai_auth=true,supports_websockets=false,base_url=`+strconv.Quote(loopbackBaseURL)+`}`,
+		"-",
+	)
 	proxyURL := ""
-	if account.Proxy != nil && account.ProxyID != nil {
-		proxyURL = account.Proxy.URL()
+	if forwardAccount.Proxy != nil && forwardAccount.ProxyID != nil {
+		proxyURL = forwardAccount.Proxy.URL()
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	guardArgs := append([]string{s.intelligenceCLIPath(), taskDir, "--"}, args...)
 	cmd := exec.CommandContext(runCtx, s.intelligenceCLISandboxPath(), guardArgs...)
 	cmd.Dir = workspace
-	cmd.Env = intelligenceCLIEnvironment(cliHome, proxyURL)
+	cmd.Env = intelligenceCLIEnvironment(cliHome)
 	cmd.Stdin = strings.NewReader(prompt)
 	configureIntelligenceCLIProcess(cmd)
 	stdout := &intelligenceCLIBoundedBuffer{limit: intelligenceCLIStdoutLimit, cancel: cancel}
@@ -291,7 +318,7 @@ func (s *AccountTestService) runCodexCLIIntelligenceTest(ctx context.Context, ac
 	// CLI failures often have a nonzero exit code. Parse their JSON events before
 	// returning so the provider's actual failure is not reduced to "exit status 1".
 	message, eventErr := intelligenceCLICompletedMessage(stdout.String())
-	redactions := intelligenceCLIRedactions(account, credential, token, proxyURL, taskDir, s.intelligenceCLIPath(), s.intelligenceCLISandboxPath())
+	redactions := intelligenceCLIRedactions(account, credential, token, ephemeralKey, loopbackBaseURL, proxyURL, taskDir, s.intelligenceCLIPath(), s.intelligenceCLISandboxPath())
 	if runErr != nil {
 		failure := &intelligenceCLIError{cause: fmt.Errorf("codex CLI execution failed: %w", runErr)}
 		var eventFailure *intelligenceCLIError
@@ -355,20 +382,17 @@ func (s *AccountTestService) intelligenceCLIInstallationID(accountID int64) stri
 	return id.String()
 }
 
-func intelligenceCLIAuthJSON(account *Account, token string) ([]byte, error) {
+func intelligenceCLIOAuthAccountID(account *Account, token string) (string, error) {
 	if strings.TrimSpace(token) == "" {
-		return nil, errors.New("codex CLI account credential is missing")
-	}
-	if account.Type == AccountTypeAPIKey {
-		return json.Marshal(map[string]any{"auth_mode": "apikey", "OPENAI_API_KEY": token})
+		return "", errors.New("codex CLI account credential is missing")
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil, errors.New("codex CLI OAuth credential is not a JWT")
+		return "", errors.New("codex CLI OAuth credential is not a JWT")
 	}
 	claimBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, errors.New("codex CLI OAuth credential claims are invalid")
+		return "", errors.New("codex CLI OAuth credential claims are invalid")
 	}
 	var claims struct {
 		Auth struct {
@@ -376,36 +400,271 @@ func intelligenceCLIAuthJSON(account *Account, token string) ([]byte, error) {
 		} `json:"https://api.openai.com/auth"`
 	}
 	if err := json.Unmarshal(claimBytes, &claims); err != nil || claims.Auth.AccountID == "" {
-		return nil, errors.New("codex CLI OAuth credential identity is missing")
+		return "", errors.New("codex CLI OAuth credential identity is missing")
 	}
 	accountID := account.GetChatGPTAccountID()
 	if accountID == "" {
 		accountID = claims.Auth.AccountID
 	}
-	// This is the CLI's external-access-token auth format. The CLI uses the
-	// access JWT itself for identity claims and does not refresh external tokens.
-	return json.Marshal(map[string]any{
-		"auth_mode": "chatgptAuthTokens", "OPENAI_API_KEY": nil,
-		"tokens":       map[string]any{"id_token": token, "access_token": token, "refresh_token": "", "account_id": accountID},
-		"last_refresh": time.Now().UTC().Format(time.RFC3339),
+	return accountID, nil
+}
+
+func intelligenceCLILocalAuthJSON(ephemeralToken string) ([]byte, error) {
+	if strings.TrimSpace(ephemeralToken) == "" {
+		return nil, errors.New("codex CLI local gateway credential is missing")
+	}
+	return json.Marshal(map[string]any{"auth_mode": "apikey", "OPENAI_API_KEY": ephemeralToken})
+}
+
+func buildIntelligenceCLIForwardAccount(account, credential *Account, token, chatgptAccountID string) *Account {
+	cloned := *credential
+	cloned.ParentAccountID = nil
+	if account != nil {
+		cloned.ProxyID = account.ProxyID
+		cloned.Proxy = account.Proxy
+		if cloned.Proxy == nil && credential.Proxy != nil {
+			cloned.Proxy = credential.Proxy
+		}
+	}
+	creds := make(map[string]any, len(credential.Credentials)+2)
+	for k, v := range credential.Credentials {
+		if k == "model_mapping" || k == "codex_cli_only" {
+			continue
+		}
+		creds[k] = v
+	}
+	if credential.Type == AccountTypeOAuth {
+		creds["access_token"] = token
+		if chatgptAccountID != "" {
+			creds["chatgpt_account_id"] = chatgptAccountID
+		}
+	} else {
+		creds["api_key"] = token
+	}
+	cloned.Credentials = creds
+
+	extra := make(map[string]any, len(credential.Extra)+len(account.Extra))
+	for k, v := range credential.Extra {
+		if k == "codex_cli_only" {
+			continue
+		}
+		extra[k] = v
+	}
+	if account != nil {
+		for k, v := range account.Extra {
+			if k == "codex_cli_only" {
+				continue
+			}
+			extra[k] = v
+		}
+	}
+	cloned.Extra = extra
+	return &cloned
+}
+
+func (s *AccountTestService) startIntelligenceCLILoopbackServer(forwardAccount *Account, ephemeralKey string) (string, *http.Server, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", nil, fmt.Errorf("listen local Codex CLI gateway: %w", err)
+	}
+	getGateway := sync.OnceValue(s.intelligenceCLIGatewayService)
+
+	engine := gin.New()
+	expectedAuth := "Bearer " + ephemeralKey
+	handleForward := func(compact bool) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+			if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": gin.H{
+						"type":    "authentication_error",
+						"message": "Invalid local Codex CLI gateway token",
+					},
+				})
+				return
+			}
+			c.Request.Header.Del("Authorization")
+
+			body, readErr := io.ReadAll(io.LimitReader(c.Request.Body, 16<<20))
+			if readErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": gin.H{
+						"type":    "invalid_request_error",
+						"message": "Failed to read request body",
+					},
+				})
+				return
+			}
+			if compact && gjson.GetBytes(body, "stream").Exists() {
+				if patched, patchErr := sjson.DeleteBytes(body, "stream"); patchErr == nil {
+					body = patched
+				}
+			}
+
+			_, forwardErr := getGateway().Forward(c.Request.Context(), c, forwardAccount, body)
+			if forwardErr != nil && !c.Writer.Written() {
+				writeIntelligenceCLIGatewayError(c, forwardErr)
+			}
+		}
+	}
+	handleInputTokens := func(c *gin.Context) {
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": gin.H{
+					"type":    "authentication_error",
+					"message": "Invalid local Codex CLI gateway token",
+				},
+			})
+			return
+		}
+		c.Request.Header.Del("Authorization")
+
+		body, readErr := io.ReadAll(io.LimitReader(c.Request.Body, 16<<20))
+		if readErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": "Failed to read request body",
+				},
+			})
+			return
+		}
+		if forwardErr := getGateway().ForwardResponsesInputTokens(c.Request.Context(), c, forwardAccount, body); forwardErr != nil && !c.Writer.Written() {
+			writeIntelligenceCLIGatewayError(c, forwardErr)
+		}
+	}
+
+	engine.POST("/v1/responses", handleForward(false))
+	engine.POST("/responses", handleForward(false))
+	engine.POST("/v1/responses/compact", handleForward(true))
+	engine.POST("/responses/compact", handleForward(true))
+	engine.POST("/v1/responses/input_tokens", handleInputTokens)
+	engine.POST("/responses/input_tokens", handleInputTokens)
+
+	server := &http.Server{
+		Handler:           engine,
+		ReadHeaderTimeout: 15 * time.Second,
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	baseURL := "http://" + listener.Addr().String() + "/v1"
+	return baseURL, server, nil
+}
+
+func (s *AccountTestService) intelligenceCLIGatewayService() *OpenAIGatewayService {
+	if s != nil && s.openaiGatewayService != nil {
+		return s.openaiGatewayService
+	}
+	var accountRepo AccountRepository
+	var upstream HTTPUpstream
+	var cfg *config.Config
+	var settingService *SettingService
+	if s != nil {
+		accountRepo = s.accountRepo
+		upstream = s.httpUpstream
+		cfg = s.cfg
+		settingService = s.settingService
+	}
+	if upstream == nil {
+		upstream = &defaultIntelligenceCLIHTTPUpstream{}
+	}
+	gw := NewOpenAIGatewayService(
+		accountRepo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		cfg,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		upstream,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		settingService,
+		nil,
+	)
+	if s != nil && s.pluginManager != nil {
+		gw.SetPluginManager(s.pluginManager)
+	}
+	return gw
+}
+
+func writeIntelligenceCLIGatewayError(c *gin.Context, err error) {
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) {
+		statusCode := failoverErr.StatusCode
+		if statusCode <= 0 {
+			statusCode = http.StatusBadGateway
+		}
+		if len(failoverErr.ResponseBody) > 0 && json.Valid(failoverErr.ResponseBody) {
+			c.Data(statusCode, "application/json", failoverErr.ResponseBody)
+			return
+		}
+		msg := strings.TrimSpace(string(failoverErr.ResponseBody))
+		if msg == "" {
+			msg = fmt.Sprintf("upstream error: %d", statusCode)
+		}
+		c.JSON(statusCode, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": msg,
+			},
+		})
+		return
+	}
+	c.JSON(http.StatusBadGateway, gin.H{
+		"error": gin.H{
+			"type":    "upstream_error",
+			"message": err.Error(),
+		},
 	})
 }
 
-func intelligenceCLIEnvironment(cliHome, proxyURL string) []string {
+type defaultIntelligenceCLIHTTPUpstream struct{}
+
+func (u *defaultIntelligenceCLIHTTPUpstream) Do(req *http.Request, proxyURL string, _ int64, _ int) (*http.Response, error) {
+	return u.DoWithTLS(req, proxyURL, 0, 0, nil)
+}
+
+func (u *defaultIntelligenceCLIHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	var transport *http.Transport
+	if baseTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = baseTransport.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
+	if strings.TrimSpace(proxyURL) != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(parsed)
+	}
+	client := &http.Client{Transport: transport}
+	return client.Do(req) // #nosec G704 -- upstream URL is validated by OpenAIGatewayService / validateUpstreamBaseURL
+}
+
+func intelligenceCLIEnvironment(cliHome string) []string {
 	env := make([]string, 0, 16)
 	for _, key := range []string{"PATH", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if value := os.Getenv(key); value != "" {
 			env = append(env, key+"="+value)
 		}
 	}
-	env = append(env, "TERM=dumb", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_cli_rs")
+	env = append(env, "TERM=dumb", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_cli_rs", "NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
 	if cliHome != "" {
 		env = append(env, "CODEX_HOME="+cliHome, "HOME="+filepath.Dir(cliHome), "TMPDIR="+filepath.Dir(cliHome), "XDG_RUNTIME_DIR="+filepath.Join(filepath.Dir(cliHome), "runtime"))
-	}
-	if proxyURL != "" {
-		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-			env = append(env, key+"="+proxyURL)
-		}
 	}
 	return env
 }

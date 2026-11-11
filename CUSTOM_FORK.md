@@ -115,7 +115,7 @@ IP 解析与现有审计、会话绑定共用配置。反向代理须覆盖客�
 
 账号管理 → 更多 → **降智测试**，仅使用 **Codex CLI**。原生 CLI 支持 OpenAI OAuth 和使用 Responses 协议的 API Key 账号，沿用所选账号的凭据、模型映射、代理以及选定的思考等级。Agent Identity 等不兼容认证会明确拒绝。OpenAI 文本连接测试也使用同一 CLI 执行器，限时两分钟，默认发送 `hi` 并展示模型实际回答；图片测试和 Compact 探测沿用各自的专用接口。
 
-定制镜像内置官方 Codex CLI **0.160.0**，分别校验 amd64/arm64 的官方安装包 SHA-256。后台调用 `codex exec`，通过标准输入传入原始提示词，不读取已有 Codex 配置、登录账号或规则文件；OAuth 令牌由现有刷新逻辑取得，不向 CLI 提供刷新令牌。请求身份设为 `codex_cli_rs`，User-Agent 由真实 CLI 根据版本和容器系统生成。
+定制镜像内置官方 Codex CLI **0.160.0**，分别校验 amd64/arm64 的官方安装包 SHA-256。后台调用 `codex exec`，通过标准输入传入原始提示词，不读取已有 Codex 配置、登录账号或规则文件；每次任务在进程内启动仅监听 `127.0.0.1` 的临时本地网关并生成一次性令牌写入任务 `auth.json`，CLI 仅请求本地 Sub2API Responses 接口，不向 CLI 暴露账号真实 OAuth 令牌、`chatgpt_account_id`、API Key 或刷新令牌，再由 Sub2API 网关携带所选账号凭据与代理解析并转发至上游。请求身份设为 `codex_cli_rs`，User-Agent 由真实 CLI 根据版本和容器系统生成。
 
 每次任务拥有独立临时目录和登录文件，结束或超时后清理，并终止工具子进程。`codex-test-sandbox` 对整个 CLI 和子进程施加 Landlock 文件访问限制，允许读取运行所需系统文件、只在本次任务目录内写入文件内容；应用数据目录和其他任务不在读取范围。CLI 使用外部沙箱模式，不额外启动 bubblewrap。容器无需增加特权或关闭默认 seccomp；宿主内核须支持 **Landlock ABI ≥ 2**。ABI 2 额外安装系统调用过滤器，补齐文件截断保护；无法施加限制时创建测试会直接报错。
 
