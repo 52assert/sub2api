@@ -39,6 +39,7 @@ type SubscriberAccountProvider interface {
 	ListSubscriberAccounts(c *gin.Context, allowedGroupIDs map[int64]struct{}, groupNames map[int64]string, isAdmin bool)
 	GetSubscriberBatchTodayStats(c *gin.Context, allowedGroupIDs map[int64]struct{}, isAdmin bool)
 	GetSubscriberBatchUsage(c *gin.Context, allowedGroupIDs map[int64]struct{}, isAdmin bool)
+	RefreshSubscriberResetCredits(c *gin.Context, accountID int64, allowedGroupIDs map[int64]struct{}, isAdmin bool)
 }
 
 // SubscriberResetVoteManager handles initiating and casting subscriber reset votes.
@@ -323,4 +324,24 @@ func (h *SubscriptionHandler) CastSubscriberAccountResetVote(c *gin.Context) {
 		return
 	}
 	response.Success(c, res)
+}
+
+// RefreshSubscriberAccountResetCredits queries and caches live reset credit count & expiration times
+// for a subscriber-authorized OpenAI OAuth shared account.
+// POST /api/v1/subscriptions/accounts/:id/reset-credits/refresh
+func (h *SubscriptionHandler) RefreshSubscriberAccountResetCredits(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h == nil || h.subscriberAccountProvider == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Reset credit service unavailable")
+		return
+	}
+	allowedGroupIDs, _, isAdmin, ok := h.resolveSubscriberAllowedGroups(c)
+	if !ok {
+		return
+	}
+	h.subscriberAccountProvider.RefreshSubscriberResetCredits(c, accountID, allowedGroupIDs, isAdmin)
 }

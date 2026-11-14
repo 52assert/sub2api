@@ -97,6 +97,16 @@
         {{ countdownLabel }}
       </span>
     </template>
+    <button
+      v-if="isAdmin"
+      type="button"
+      data-testid="admin-vote-details-button"
+      class="inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-indigo-600 transition-colors hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-900/20"
+      @click.stop="$emit('inspect', account)"
+    >
+      <Icon name="users" size="xs" />
+      <span>{{ t('userSubscriptions.resetVote.adminDetailsButton') }}</span>
+    </button>
   </div>
   <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
 </template>
@@ -110,10 +120,12 @@ import type { SubscriberAccountItem } from '@/api/subscriptions'
 const props = defineProps<{
   account: SubscriberAccountItem
   voting?: boolean
+  isAdmin?: boolean
 }>()
 
 defineEmits<{
   vote: [account: SubscriberAccountItem]
+  inspect: [account: SubscriberAccountItem]
 }>()
 
 const { t } = useI18n()

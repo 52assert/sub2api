@@ -36,6 +36,7 @@ func TestAccountSchedulesRoutesRequireAdminProtection(t *testing.T) {
 		{http.MethodPut, "/api/v1/admin/accounts/1/action-schedules/2"},
 		{http.MethodDelete, "/api/v1/admin/accounts/1/action-schedules/2"},
 		{http.MethodGet, "/api/v1/admin/accounts/1/action-schedules/2/runs"},
+		{http.MethodGet, "/api/v1/admin/accounts/1/reset-votes"},
 	} {
 		for _, authorization := range []string{"", "Bearer non-admin"} {
 			recorder := httptest.NewRecorder()

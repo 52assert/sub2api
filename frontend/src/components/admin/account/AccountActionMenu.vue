@@ -63,6 +63,15 @@
               <Icon name="refresh" size="sm" />
               {{ locale.startsWith('zh') ? '重置关联订阅' : 'Reset linked subscriptions' }}
             </button>
+            <button
+              v-if="isOpenAIOAuthParent"
+              data-testid="account-reset-votes-action"
+              @click="$emit('reset-votes', account); $emit('close')"
+              class="flex w-full items-center gap-2 px-4 py-2 text-sm text-indigo-600 hover:bg-gray-100 dark:hover:bg-dark-700"
+            >
+              <Icon name="users" size="sm" />
+              {{ t('userSubscriptions.resetVote.menuAction') }}
+            </button>
             <button v-if="hasQuotaLimit" @click="$emit('reset-quota', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-teal-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="refresh" size="sm" />
               {{ t('admin.accounts.resetQuota') }}
@@ -83,7 +92,7 @@ import type { Account } from '@/types'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 
 const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
-const emit = defineEmits(['close', 'test', 'intelligence-test', 'stats', 'schedule', 'action-schedules', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'reset-subscriptions'])
+const emit = defineEmits(['close', 'test', 'intelligence-test', 'stats', 'schedule', 'action-schedules', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'reset-subscriptions', 'reset-votes'])
 const { t, locale } = useI18n()
 const menuRef = ref<HTMLElement | null>(null)
 const { width: viewportWidth, height: viewportHeight } = useWindowSize()

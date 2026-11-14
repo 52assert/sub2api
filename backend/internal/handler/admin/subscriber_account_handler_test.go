@@ -45,6 +45,15 @@ func TestSubscriberAccountHandler_FiltersAndRedactsSensitiveFields(t *testing.T)
 				"subscriber_visible": true,
 				"email_address":      "owner@secret.com",
 				"privacy_mode":       "training_off",
+				"codex_reset_credit_snapshot": map[string]any{
+					"available_count": 2,
+					"credits": []any{
+						map[string]any{
+							"credit_id":  "secret-credit-id",
+							"expires_at": "2026-11-20T08:00:00Z",
+						},
+					},
+				},
 				"upstream_billing_probe": map[string]any{
 					"last_probed_at": "2026-11-09T00:00:00Z",
 				},
@@ -152,6 +161,17 @@ func TestSubscriberAccountHandler_FiltersAndRedactsSensitiveFields(t *testing.T)
 	require.NotContains(t, extra, "email_address")
 	require.NotContains(t, extra, "upstream_billing_probe")
 	require.NotContains(t, extra, "subscriber_visible")
+
+	snapshot, ok := extra["codex_reset_credit_snapshot"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(2), snapshot["available_count"])
+	credits, ok := snapshot["credits"].([]any)
+	require.True(t, ok)
+	require.Len(t, credits, 1)
+	creditItem, ok := credits[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "2026-11-20T08:00:00Z", creditItem["expires_at"])
+	require.NotContains(t, creditItem, "credit_id")
 
 	// Test admin toggle endpoint
 	toggleRec := httptest.NewRecorder()

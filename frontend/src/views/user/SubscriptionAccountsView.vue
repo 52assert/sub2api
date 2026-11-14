@@ -212,7 +212,9 @@
               <SubscriberResetVoteCell
                 :account="row"
                 :voting="votingAccountIds[row.id] === true"
+                :is-admin="isAdmin"
                 @vote="handleVoteClick"
+                @inspect="inspectVoteAccount = $event"
               />
             </template>
 
@@ -244,6 +246,11 @@
       @confirm="confirmVoteReset"
       @cancel="cancelVoteConfirm"
     />
+    <AccountResetVotesModal
+      :show="!!inspectVoteAccount"
+      :account="inspectVoteAccount"
+      @close="inspectVoteAccount = null"
+    />
   </AppLayout>
 </template>
 
@@ -255,6 +262,8 @@ import subscriptionsAPI, { type SubscriberAccountItem } from '@/api/subscription
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import AccountResetVotesModal from '@/components/admin/account/AccountResetVotesModal.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -743,9 +752,13 @@ const allColumns = computed(() => [
   { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true }
 ])
 
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.isAdmin)
+
 const votingAccountIds = ref<Record<number, boolean>>({})
 const showVoteConfirmDialog = ref(false)
 const pendingVoteAccount = ref<SubscriberAccountItem | null>(null)
+const inspectVoteAccount = ref<SubscriberAccountItem | null>(null)
 
 const voteConfirmMessage = computed(() => {
   const acc = pendingVoteAccount.value

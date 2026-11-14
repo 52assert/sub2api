@@ -31,11 +31,19 @@ vi.mock('@/api/subscriptions', () => ({
   }
 }))
 
+const { mockAuthState } = vi.hoisted(() => ({
+  mockAuthState: { isAdmin: false }
+}))
+
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showSuccess,
     showError
   })
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => mockAuthState
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -63,6 +71,12 @@ function mountView() {
           template:
             '<div v-if="show" data-testid="vote-confirm-dialog"><span>{{ title }}</span><button data-testid="confirm-vote-btn" @click="$emit(\'confirm\')">confirm</button><button data-testid="cancel-vote-btn" @click="$emit(\'cancel\')">cancel</button></div>'
         },
+        AccountResetVotesModal: {
+          props: ['show', 'account'],
+          emits: ['close'],
+          template:
+            '<div v-if="show" data-testid="admin-reset-votes-modal" :data-account-id="account?.id"></div>'
+        },
         HelpTooltip: true,
         Pagination: true,
         SearchInput: true,
@@ -83,6 +97,7 @@ enableAutoUnmount(afterEach)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockAuthState.isAdmin = false
   localStorage.clear()
   getActiveSubscriptions.mockResolvedValue([])
   getSubscriberAccountsBatchTodayStats.mockResolvedValue({ stats: {} })
@@ -302,5 +317,46 @@ describe('SubscriptionAccountsView reset voting', () => {
     expect(showSuccess).toHaveBeenCalledWith('userSubscriptions.resetVote.triggeredSuccess:{"count":4}')
     expect(getActiveSubscriptions).toHaveBeenCalledTimes(2)
     expect(listSubscriberAccounts).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows admin vote details trigger only to admins and opens modal on click', async () => {
+    mockAuthState.isAdmin = true
+    const accounts: SubscriberAccountItem[] = [
+      {
+        id: 21,
+        name: 'Admin-View-Account',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        reset_vote: {
+          supported: true,
+          eligible: false,
+          can_vote: false,
+          has_voted: false,
+          ineligible_reason: 'quota_group_only',
+          status: 'open',
+          vote_count: 1,
+          threshold: 3,
+          cooldown_active: false,
+          can_initiate: false
+        }
+      } as SubscriberAccountItem
+    ]
+    listSubscriberAccounts.mockResolvedValue({ items: accounts, total: 1, page: 1, page_size: 20, total_pages: 1 })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const detailsBtn = wrapper.find('[data-row-id="21"] [data-testid="admin-vote-details-button"]')
+    expect(detailsBtn.exists()).toBe(true)
+    await detailsBtn.trigger('click')
+
+    const modal = wrapper.find('[data-testid="admin-reset-votes-modal"]')
+    expect(modal.exists()).toBe(true)
+    expect(modal.attributes('data-account-id')).toBe('21')
   })
 })

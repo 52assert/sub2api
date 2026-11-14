@@ -35,10 +35,11 @@
             d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
           />
         </svg>
-        {{ t('admin.accounts.openaiQuotaReset.count') }}<span v-if="data"> {{ availableResetCount }}</span>
+        {{ countButtonLabel }}<span v-if="data"> {{ availableResetCount }}</span>
       </button>
 
       <button
+        v-if="!readonly"
         type="button"
         class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-orange-600 transition-colors hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-orange-400 dark:hover:bg-orange-900/30"
         :disabled="resetting || loading || !canReset"
@@ -63,6 +64,7 @@
       </button>
 
       <button
+        v-if="!readonly"
         type="button"
         data-testid="codex-credits"
         class="inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
@@ -73,15 +75,15 @@
         {{ t('admin.accounts.openaiQuotaReset.points') }}
         <span class="truncate tabular-nums">{{ creditsDisplay }}</span>
       </button>
-      <OpenAIReferralCell :account="account" />
+      <OpenAIReferralCell v-if="!readonly" :account="account" />
     </div>
 
-    <div v-if="creditsCacheWarning" class="text-[10px] text-amber-600 dark:text-amber-400">
+    <div v-if="!readonly && creditsCacheWarning" class="text-[10px] text-amber-600 dark:text-amber-400">
       {{ t('admin.accounts.openaiQuotaReset.pointsCachePersistFailed') }}
     </div>
 
     <div
-      v-if="autoResetState"
+      v-if="!readonly && autoResetState"
       class="flex flex-wrap items-center gap-1 text-[10px]"
       data-testid="auto-reset-credit-state"
     >
@@ -168,6 +170,7 @@
     </div>
 
     <ConfirmDialog
+      v-if="!readonly"
       :show="showResetConfirm"
       :title="t('admin.accounts.openaiQuotaReset.confirmTitle')"
       :message="t('admin.accounts.openaiQuotaReset.confirmMessage', { count: availableResetCount })"
@@ -190,12 +193,16 @@ import {
   type OpenAIQuotaUsage,
   type OpenAIQuotaResetResult
 } from '@/api/admin/accounts'
+import { refreshSubscriberAccountResetCredits } from '@/api/subscriptions'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import OpenAIReferralCell from '@/components/account/OpenAIReferralCell.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   account: Account
-}>()
+  readonly?: boolean
+}>(), {
+  readonly: false
+})
 
 const emit = defineEmits<{
   'account-updated': [account: Account]
@@ -367,9 +374,18 @@ const resetButtonTitle = computed(() => {
   return t('admin.accounts.openaiQuotaReset.resetTooltipReady')
 })
 
+const countButtonLabel = computed(() =>
+  props.readonly ? t('userSubscriptions.resetCredits.count') : t('admin.accounts.openaiQuotaReset.count')
+)
+
 // "次数" button doubles as the upstream-query trigger and the count display.
 // Tooltip differs between "click to load" (no data yet) and "click to refresh".
 const countButtonTitle = computed(() => {
+  if (props.readonly) {
+    return data.value
+      ? t('userSubscriptions.resetCredits.countTooltipRefresh')
+      : t('userSubscriptions.resetCredits.countTooltipLoad')
+  }
   if (!data.value) return t('admin.accounts.openaiQuotaReset.countTooltipLoad')
   return t('admin.accounts.openaiQuotaReset.countTooltipRefresh')
 })
@@ -442,6 +458,19 @@ const handleQuery = async () => {
   resetWarning.value = null
   showResetCreditDetails.value = false
   try {
+    if (props.readonly) {
+      const result = await refreshSubscriberAccountResetCredits(accountID)
+      if (props.account.id !== accountID) return
+      const usageResult: OpenAIQuotaUsage = {
+        fetched_at: result.fetched_at,
+        rate_limit_reset_credits: result.rate_limit_reset_credits ?? undefined
+      }
+      data.value = usageResult
+      if (result.cache_persisted) {
+        cachedData.value = usageResult
+      }
+      return
+    }
     const result = await refreshOpenAIQuota(accountID)
     if (props.account.id !== accountID) return
     updateCredits(result)
@@ -535,6 +564,16 @@ watch(
     resetting.value = false
     showResetConfirm.value = false
     showResetCreditDetails.value = false
+  }
+)
+
+watch(
+  () => JSON.stringify(props.account.extra?.codex_reset_credit_snapshot ?? null),
+  () => {
+    if (loading.value || resetting.value) return
+    const nextCached = readCachedResetCredits(props.account)
+    cachedData.value = nextCached
+    data.value = nextCached
   }
 )
 

@@ -125,4 +125,14 @@ func TestSubscriptionHandler_CastSubscriberAccountResetVote(t *testing.T) {
 		require.True(t, body.Data.ResetSucceeded)
 		require.Equal(t, 4, body.Data.State.SubscriptionResetCount)
 	})
+
+	t.Run("refresh reset credits rejects invalid account id", func(t *testing.T) {
+		h := NewSubscriptionHandler(nil)
+		router := gin.New()
+		router.POST("/accounts/:id/reset-credits/refresh", h.RefreshSubscriberAccountResetCredits)
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/accounts/not-an-id/reset-credits/refresh", nil))
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
 }
