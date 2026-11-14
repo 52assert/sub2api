@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"context"
+	"net/http"
+	"strconv"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -37,10 +41,16 @@ type SubscriberAccountProvider interface {
 	GetSubscriberBatchUsage(c *gin.Context, allowedGroupIDs map[int64]struct{}, isAdmin bool)
 }
 
+// SubscriberResetVoteManager handles initiating and casting subscriber reset votes.
+type SubscriberResetVoteManager interface {
+	CastVote(ctx context.Context, userID, accountID int64) (*service.SubscriberResetVoteCastResult, error)
+}
+
 // SubscriptionHandler handles user subscription operations
 type SubscriptionHandler struct {
-	subscriptionService       *service.SubscriptionService
-	subscriberAccountProvider SubscriberAccountProvider
+	subscriptionService        *service.SubscriptionService
+	subscriberAccountProvider  SubscriberAccountProvider
+	subscriberResetVoteManager SubscriberResetVoteManager
 }
 
 // NewSubscriptionHandler creates a new user subscription handler
@@ -56,6 +66,14 @@ func (h *SubscriptionHandler) SetSubscriberAccountProvider(provider SubscriberAc
 		return
 	}
 	h.subscriberAccountProvider = provider
+}
+
+// SetSubscriberResetVoteManager wires subscriber reset voting operations.
+func (h *SubscriptionHandler) SetSubscriberResetVoteManager(manager SubscriberResetVoteManager) {
+	if h == nil {
+		return
+	}
+	h.subscriberResetVoteManager = manager
 }
 
 // List handles listing current user's subscriptions
@@ -227,6 +245,9 @@ func (h *SubscriptionHandler) resolveSubscriberAllowedGroups(c *gin.Context) (ma
 		if sub.GroupID <= 0 {
 			continue
 		}
+		if sub.Group != nil && sub.Group.SubscriptionType != "" && !sub.Group.IsSubscriptionType() {
+			continue
+		}
 		allowedGroupIDs[sub.GroupID] = struct{}{}
 		if sub.Group != nil {
 			groupNames[sub.GroupID] = sub.Group.I18n.LocalizeName(acceptLang, sub.Group.Name)
@@ -277,4 +298,29 @@ func (h *SubscriptionHandler) GetSubscriberAccountsBatchUsage(c *gin.Context) {
 		return
 	}
 	h.subscriberAccountProvider.GetSubscriberBatchUsage(c, allowedGroupIDs, isAdmin)
+}
+
+// CastSubscriberAccountResetVote initiates or casts a vote to reset a shared account.
+// POST /api/v1/subscriptions/accounts/:id/reset-votes
+func (h *SubscriptionHandler) CastSubscriberAccountResetVote(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not found in context")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h == nil || h.subscriberResetVoteManager == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Reset voting service unavailable")
+		return
+	}
+	res, err := h.subscriberResetVoteManager.CastVote(c.Request.Context(), subject.UserID, accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
 }

@@ -872,6 +872,7 @@ var ProviderSet = wire.NewSet(
 	ProvideIntelligenceTestService,
 	ProvideCustomCodexResetService,
 	ProvideCustomAccountScheduleService,
+	ProvideCustomSubscriberResetVoteService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,

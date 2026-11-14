@@ -379,6 +379,16 @@ func (s *OpenAIQuotaService) ResetCreditTargetedForSchedule(ctx context.Context,
 	return s.resetCredit(ctx, accountID, creditID, redeemRequestID, true, expectedIdentity)
 }
 
+// ResetCreditWithRequestID consumes an available reset credit without a pinned credit_id
+// while passing a caller-supplied redeem_request_id for upstream idempotency.
+func (s *OpenAIQuotaService) ResetCreditWithRequestID(ctx context.Context, accountID int64, redeemRequestID string) (*OpenAIQuotaResetResult, error) {
+	redeemRequestID = strings.TrimSpace(redeemRequestID)
+	if redeemRequestID == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_QUOTA_RESET_INVALID", "redeem_request_id is required")
+	}
+	return s.resetCredit(ctx, accountID, "", redeemRequestID, false)
+}
+
 func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, creditID, redeemRequestID string, targeted bool, expectedIdentity ...string) (*OpenAIQuotaResetResult, error) {
 	ctx = WithScopedAdminAccountOperation(ctx, "openai.quota.reset")
 	if err := scopedAccountIDAccess(ctx, s.accountRepo, accountID, "openai.quota.reset", false); err != nil {

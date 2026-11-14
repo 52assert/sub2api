@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -73,12 +74,19 @@ type customResetQuery interface {
 }
 
 func customResetSubscriptions(ctx context.Context, q customResetQuery, id int64, lock bool) ([]CustomResetSubscription, error) {
+	return customResetSubscriptionsFiltered(ctx, q, id, lock, false)
+}
+
+func customResetSubscriptionsFiltered(ctx context.Context, q customResetQuery, id int64, lock, subscriptionGroupsOnly bool) ([]CustomResetSubscription, error) {
 	query := `SELECT us.id,us.user_id,us.group_id,g.name,us.daily_usage_usd,us.weekly_usage_usd,us.daily_window_start,us.weekly_window_start
  FROM user_subscriptions us JOIN groups g ON g.id=us.group_id
  WHERE us.deleted_at IS NULL AND g.deleted_at IS NULL AND us.status='active'
  AND us.starts_at <= NOW() AND us.expires_at > NOW()
- AND EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=$1 AND ag.group_id=us.group_id)
- ORDER BY us.id`
+ AND EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=$1 AND ag.group_id=us.group_id)`
+	if subscriptionGroupsOnly {
+		query += ` AND g.subscription_type='subscription'`
+	}
+	query += ` ORDER BY us.id`
 	if lock {
 		query += " FOR UPDATE OF us"
 	}
@@ -196,11 +204,28 @@ func beginCustomResetCard(ctx context.Context, db *sql.DB, id int64) (func(), er
 // subtract only the balances recorded at or before the announcement, preserving
 // all later charges, including consumption during polling and verification.
 // Each window is protected separately when another reset already changed it.
+// ResetByVote resets daily and weekly usage for active subscription-type groups
+// bound to the account when a subscriber vote round hits threshold.
+func (s *CustomCodexResetService) ResetByVote(ctx context.Context, id int64, operation string, actor int64) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, infraerrors.ServiceUnavailable("CODEX_RESET_UNAVAILABLE", "Reset service is unavailable")
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		return 0, infraerrors.BadRequest("CODEX_RESET_OPERATION_REQUIRED", "Reset operation ID is required")
+	}
+	return s.applyWithOptions(ctx, id, operation, "", "", actor, nil, true)
+}
+
 func (s *CustomCodexResetService) apply(ctx context.Context, id int64, operation, event, fingerprint string, actor int64) (int, error) {
 	return s.applyWithSchedule(ctx, id, operation, event, fingerprint, actor, nil)
 }
 
 func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int64, operation, event, fingerprint string, actor int64, schedule *customScheduledResetScope) (int, error) {
+	return s.applyWithOptions(ctx, id, operation, event, fingerprint, actor, schedule, false)
+}
+
+func (s *CustomCodexResetService) applyWithOptions(ctx context.Context, id int64, operation, event, fingerprint string, actor int64, schedule *customScheduledResetScope, voteReset bool) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -220,7 +245,7 @@ func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int6
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(credentials->>'chatgpt_account_id','') FROM accounts WHERE id=$1 AND deleted_at IS NULL AND platform='openai' AND type='oauth' FOR UPDATE`, id).Scan(&upstreamAccountID); err != nil {
 		return 0, err
 	}
-	if schedule != nil {
+	if schedule != nil || voteReset {
 		var claimed string
 		err = tx.QueryRowContext(ctx, `INSERT INTO custom_account_subscription_reset_receipts(operation_id,account_id)
  VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING operation_id`, operation, id).Scan(&claimed)
@@ -251,11 +276,11 @@ func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int6
 			}
 		}
 	}
-	subs, err := customResetSubscriptions(ctx, tx, id, true)
+	subs, err := customResetSubscriptionsFiltered(ctx, tx, id, true, voteReset)
 	if err != nil {
 		return 0, err
 	}
-	if event == "" && schedule == nil && customResetFingerprint(subs) != fingerprint {
+	if event == "" && schedule == nil && !voteReset && customResetFingerprint(subs) != fingerprint {
 		return 0, infraerrors.Conflict("CODEX_RESET_TARGETS_CHANGED", "Subscriptions changed; refresh the preview")
 	}
 	if event != "" {
@@ -279,6 +304,8 @@ func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int6
 		source = "official"
 	} else if schedule != nil {
 		source = "scheduled"
+	} else if voteReset {
+		source = "vote"
 	}
 	changed := []CustomResetSubscription{}
 	for _, v := range subs {
@@ -363,7 +390,7 @@ func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int6
 		}
 		changed = append(changed, v)
 	}
-	if schedule != nil {
+	if schedule != nil || voteReset {
 		if _, err = tx.ExecContext(ctx, `UPDATE custom_account_subscription_reset_receipts SET reset_count=$2 WHERE operation_id=$1`, operation, len(changed)); err != nil {
 			return 0, err
 		}
@@ -372,12 +399,14 @@ func (s *CustomCodexResetService) applyWithSchedule(ctx context.Context, id int6
 		return 0, err
 	}
 	var cacheWarning error
-	for _, v := range subs {
-		if err = s.subscriptions.invalidateSubscriptionCaches(v.UserID, v.GroupID); err != nil {
-			if schedule == nil {
-				return len(changed), err
+	if s.subscriptions != nil {
+		for _, v := range subs {
+			if err = s.subscriptions.invalidateSubscriptionCaches(v.UserID, v.GroupID); err != nil {
+				if schedule == nil && !voteReset {
+					return len(changed), err
+				}
+				cacheWarning = err
 			}
-			cacheWarning = err
 		}
 	}
 	if cacheWarning != nil {

@@ -74,7 +74,40 @@ export async function getSubscriptionProgress(
   return response.data
 }
 
-export type SubscriberAccountItem = Account
+export interface SubscriberResetVoteState {
+  supported: boolean
+  eligible: boolean
+  can_vote: boolean
+  has_voted: boolean
+  ineligible_reason?: 'quota_group_only' | 'not_subscribed' | 'unsupported_account' | string
+  round_id?: number
+  status: 'none' | 'open' | 'executing' | 'succeeded' | 'failed' | string
+  vote_count: number
+  threshold: number
+  initiated_at?: string
+  expires_at?: string
+  triggered_at?: string
+  completed_at?: string
+  card_status?: string
+  subscription_reset_status?: string
+  subscription_reset_count?: number
+  cooldown_active: boolean
+  can_initiate: boolean
+  error_code?: string
+  error_message?: string
+  warning_code?: string
+}
+
+export interface SubscriberResetVoteCastResult {
+  state: SubscriberResetVoteState
+  vote_recorded: boolean
+  triggered_reset: boolean
+  reset_succeeded: boolean
+}
+
+export type SubscriberAccountItem = Account & {
+  reset_vote?: SubscriberResetVoteState
+}
 
 export interface SubscriberAccountListFilters {
   platform?: string
@@ -91,8 +124,8 @@ export async function listSubscriberAccounts(
   pageSize: number = 20,
   filters?: SubscriberAccountListFilters,
   options?: { signal?: AbortSignal }
-): Promise<PaginatedResponse<Account>> {
-  const { data } = await apiClient.get<PaginatedResponse<Account>>('/subscriptions/accounts', {
+): Promise<PaginatedResponse<SubscriberAccountItem>> {
+  const { data } = await apiClient.get<PaginatedResponse<SubscriberAccountItem>>('/subscriptions/accounts', {
     params: {
       page,
       page_size: pageSize,
@@ -129,6 +162,15 @@ export async function getSubscriberAccountsBatchUsage(
   return data
 }
 
+export async function castSubscriberAccountResetVote(
+  accountId: number
+): Promise<SubscriberResetVoteCastResult> {
+  const { data } = await apiClient.post<SubscriberResetVoteCastResult>(
+    `/subscriptions/accounts/${accountId}/reset-votes`
+  )
+  return data
+}
+
 export default {
   getMySubscriptions,
   getActiveSubscriptions,
@@ -137,5 +179,6 @@ export default {
   getSubscriptionProgress,
   listSubscriberAccounts,
   getSubscriberAccountsBatchTodayStats,
-  getSubscriberAccountsBatchUsage
+  getSubscriberAccountsBatchUsage,
+  castSubscriberAccountResetVote
 }
