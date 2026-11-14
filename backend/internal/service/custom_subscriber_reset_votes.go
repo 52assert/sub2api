@@ -4,28 +4,33 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
 	SubscriberResetVoteThreshold = 3
 	SubscriberResetVoteWindow    = 24 * time.Hour
 
-	subscriberVoteStaleExecutingTimeout = 3 * time.Minute
-	subscriberVoteExecTimeout           = 90 * time.Second
-
-	SubscriberResetVoteStatusNone      = "none"
-	SubscriberResetVoteStatusOpen      = "open"
-	SubscriberResetVoteStatusExecuting = "executing"
-	SubscriberResetVoteStatusSucceeded = "succeeded"
-	SubscriberResetVoteStatusFailed    = "failed"
+	subscriberVoteStaleExecutingTimeout  = 3 * time.Minute
+	subscriberVoteExecTimeout            = 90 * time.Second
+	subscriberResetCreditRefreshTimeout  = 30 * time.Second
+	subscriberResetCreditRefreshCooldown = 60 * time.Second
+	SubscriberResetVoteStatusNone        = "none"
+	SubscriberResetVoteStatusOpen        = "open"
+	SubscriberResetVoteStatusExecuting   = "executing"
+	SubscriberResetVoteStatusSucceeded   = "succeeded"
+	SubscriberResetVoteStatusFailed      = "failed"
 
 	SubscriberResetVoteIneligibleQuotaGroupOnly = "quota_group_only"
 	SubscriberResetVoteIneligibleNotSubscribed  = "not_subscribed"
@@ -37,6 +42,7 @@ type subscriberVoteQuotaClient interface {
 	ResetCreditTargeted(ctx context.Context, accountID int64, creditID, redeemRequestID string) (*OpenAIQuotaResetResult, error)
 	ResetCreditWithRequestID(ctx context.Context, accountID int64, redeemRequestID string) (*OpenAIQuotaResetResult, error)
 	CachePostResetSnapshot(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage) error
+	CacheResetCreditsSnapshot(ctx context.Context, accountID int64, credits *OpenAIRateLimitResetCredits) error
 }
 
 type subscriberVoteResetApplier interface {
@@ -76,9 +82,69 @@ type SubscriberResetVoteCastResult struct {
 	ResetSucceeded bool                      `json:"reset_succeeded"`
 }
 
+// SubscriberAccountResetCreditsResult returns only sanitized OpenAI reset credit count
+// and expiration timestamps for subscriber UI display without leaking upstream identity fields.
+type SubscriberAccountResetCreditsResult struct {
+	RateLimitResetCredits *OpenAIRateLimitResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	FetchedAt             int64                        `json:"fetched_at"`
+	CachePersisted        bool                         `json:"cache_persisted"`
+}
+
+// SubscriberResetVoteParticipant describes an eligible subscriber or voter for admin inspection.
+type SubscriberResetVoteParticipant struct {
+	UserID      int64      `json:"user_id"`
+	Username    string     `json:"username"`
+	Email       string     `json:"email"`
+	GroupNames  []string   `json:"group_names,omitempty"`
+	VotedAt     *time.Time `json:"voted_at,omitempty"`
+	IsInitiator bool       `json:"is_initiator,omitempty"`
+}
+
+// AdminAccountResetVoteRoundBrief summarizes a past expired vote round and its voters.
+type AdminAccountResetVoteRoundBrief struct {
+	RoundID                 int64                            `json:"round_id"`
+	Status                  string                           `json:"status"`
+	VoteCount               int                              `json:"vote_count"`
+	Threshold               int                              `json:"threshold"`
+	InitiatedAt             time.Time                        `json:"initiated_at"`
+	ExpiresAt               time.Time                        `json:"expires_at"`
+	CompletedAt             *time.Time                       `json:"completed_at,omitempty"`
+	CardStatus              string                           `json:"card_status,omitempty"`
+	SubscriptionResetStatus string                           `json:"subscription_reset_status,omitempty"`
+	SubscriptionResetCount  int                              `json:"subscription_reset_count,omitempty"`
+	Voters                  []SubscriberResetVoteParticipant `json:"voters"`
+}
+
+// AdminAccountResetVoteDetails provides an admin view of who voted and who has not voted yet.
+type AdminAccountResetVoteDetails struct {
+	AccountID               int64                            `json:"account_id"`
+	AccountName             string                           `json:"account_name"`
+	Supported               bool                             `json:"supported"`
+	Status                  string                           `json:"status"`
+	RoundID                 int64                            `json:"round_id,omitempty"`
+	VoteCount               int                              `json:"vote_count"`
+	Threshold               int                              `json:"threshold"`
+	EligibleCount           int                              `json:"eligible_count"`
+	InitiatedAt             *time.Time                       `json:"initiated_at,omitempty"`
+	ExpiresAt               *time.Time                       `json:"expires_at,omitempty"`
+	TriggeredAt             *time.Time                       `json:"triggered_at,omitempty"`
+	CompletedAt             *time.Time                       `json:"completed_at,omitempty"`
+	CardStatus              string                           `json:"card_status,omitempty"`
+	SubscriptionResetStatus string                           `json:"subscription_reset_status,omitempty"`
+	SubscriptionResetCount  int                              `json:"subscription_reset_count,omitempty"`
+	ErrorCode               string                           `json:"error_code,omitempty"`
+	ErrorMessage            string                           `json:"error_message,omitempty"`
+	WarningCode             string                           `json:"warning_code,omitempty"`
+	CooldownActive          bool                             `json:"cooldown_active"`
+	Voters                  []SubscriberResetVoteParticipant `json:"voters"`
+	NonVoters               []SubscriberResetVoteParticipant `json:"non_voters"`
+	LastRound               *AdminAccountResetVoteRoundBrief `json:"last_round,omitempty"`
+}
+
 type subscriberResetVoteRoundRow struct {
 	ID                      int64
 	AccountID               int64
+	InitiatorUserID         int64
 	Threshold               int
 	Status                  string
 	RequestID               string
@@ -96,16 +162,24 @@ type subscriberResetVoteRoundRow struct {
 	HasVoted                bool
 }
 
+type cachedSubscriberResetCredits struct {
+	cachedAt time.Time
+	result   SubscriberAccountResetCreditsResult
+}
+
 // CustomSubscriberResetVoteService coordinates 24-hour reset votes initiated by active
 // subscription-group members of shared OpenAI OAuth parent accounts.
 type CustomSubscriberResetVoteService struct {
-	db        *sql.DB
-	accounts  AccountRepository
-	quota     subscriberVoteQuotaClient
-	recoverer openAIQuotaResetWorkflowRecoverer
-	resets    subscriberVoteResetApplier
-	now       func() time.Time
-	newUUID   func() string
+	db                 *sql.DB
+	accounts           AccountRepository
+	quota              subscriberVoteQuotaClient
+	recoverer          openAIQuotaResetWorkflowRecoverer
+	resets             subscriberVoteResetApplier
+	now                func() time.Time
+	newUUID            func() string
+	creditRefreshMu    sync.Mutex
+	creditRefreshCache map[int64]cachedSubscriberResetCredits
+	creditRefreshGroup singleflight.Group
 }
 
 // ProvideCustomSubscriberResetVoteService wires the subscriber reset vote service for dependency injection.
@@ -139,13 +213,14 @@ func newCustomSubscriberResetVoteServiceWithDeps(
 	resets subscriberVoteResetApplier,
 ) *CustomSubscriberResetVoteService {
 	return &CustomSubscriberResetVoteService{
-		db:        db,
-		accounts:  accounts,
-		quota:     quota,
-		recoverer: recoverer,
-		resets:    resets,
-		now:       time.Now,
-		newUUID:   uuid.NewString,
+		db:                 db,
+		accounts:           accounts,
+		quota:              quota,
+		recoverer:          recoverer,
+		resets:             resets,
+		now:                time.Now,
+		newUUID:            uuid.NewString,
+		creditRefreshCache: make(map[int64]cachedSubscriberResetCredits),
 	}
 }
 
@@ -472,6 +547,9 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 		return failRound("failed", "pending", "QUOTA_QUERY_FAILED", "Failed to check available reset cards", "", 0)
 	}
 	if usage == nil || usage.RateLimitResetCredits == nil || usage.RateLimitResetCredits.AvailableCount <= 0 {
+		if usage != nil && usage.RateLimitResetCredits != nil {
+			s.cacheObservedResetCredits(ctx, round.AccountID, usage.RateLimitResetCredits)
+		}
 		return failRound("no_credit", "pending", "NO_RESET_CARD", "No reset card is available for this account", "", 0)
 	}
 
@@ -511,6 +589,7 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 	if err := s.markCardSucceeded(ctx, round.ID); err != nil {
 		slog.Warn("subscriber_reset_vote_card_checkpoint_failed", "round_id", round.ID, "account_id", round.AccountID, "error", err)
 	}
+	s.invalidateResetCreditRefreshCache(round.AccountID)
 	round.CardStatus = "succeeded"
 
 	post := RunOpenAIQuotaResetPostProcess(ctx, round.AccountID, s.quota, s.recoverer, func(loadCtx context.Context, id int64) (*Account, error) {
@@ -519,6 +598,7 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 		}
 		return s.accounts.GetByID(loadCtx, id)
 	})
+	s.invalidateResetCreditRefreshCache(round.AccountID)
 	warningCode := post.WarningCode
 
 	resetCount, subErr := s.resets.ResetByVote(ctx, round.AccountID, round.RequestID, triggeringUserID)
@@ -855,4 +935,447 @@ func (s *CustomSubscriberResetVoteService) projectVoteRoundState(
 		ErrorMessage:            errorMessage,
 		WarningCode:             round.WarningCode,
 	}
+}
+
+func sanitizeOpenAIRateLimitResetCredits(credits *OpenAIRateLimitResetCredits) *OpenAIRateLimitResetCredits {
+	if credits == nil {
+		return &OpenAIRateLimitResetCredits{}
+	}
+	count := credits.AvailableCount
+	if count < 0 {
+		count = 0
+	}
+	sanitized := &OpenAIRateLimitResetCredits{
+		AvailableCount: count,
+	}
+	if len(credits.Credits) > 0 {
+		items := make([]OpenAIRateLimitResetCreditDetail, 0, len(credits.Credits))
+		for _, item := range credits.Credits {
+			expiresAt := strings.TrimSpace(item.ExpiresAt)
+			if expiresAt == "" {
+				continue
+			}
+			items = append(items, OpenAIRateLimitResetCreditDetail{ExpiresAt: expiresAt})
+		}
+		if len(items) > 0 {
+			sanitized.Credits = items
+		}
+	}
+	return sanitized
+}
+
+func cloneSubscriberResetCreditsResult(src SubscriberAccountResetCreditsResult) *SubscriberAccountResetCreditsResult {
+	return &SubscriberAccountResetCreditsResult{
+		RateLimitResetCredits: sanitizeOpenAIRateLimitResetCredits(src.RateLimitResetCredits),
+		FetchedAt:             src.FetchedAt,
+		CachePersisted:        src.CachePersisted,
+	}
+}
+
+func (s *CustomSubscriberResetVoteService) invalidateResetCreditRefreshCache(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.creditRefreshMu.Lock()
+	if s.creditRefreshCache != nil {
+		delete(s.creditRefreshCache, accountID)
+	}
+	s.creditRefreshMu.Unlock()
+}
+
+func (s *CustomSubscriberResetVoteService) cacheObservedResetCredits(ctx context.Context, accountID int64, credits *OpenAIRateLimitResetCredits) {
+	if s == nil || s.quota == nil || credits == nil {
+		return
+	}
+	s.invalidateResetCreditRefreshCache(accountID)
+	if cacheErr := s.quota.CacheResetCreditsSnapshot(ctx, accountID, sanitizeOpenAIRateLimitResetCredits(credits)); cacheErr != nil {
+		slog.Warn("subscriber_reset_credit_cache_persist_failed", "account_id", accountID, "error", cacheErr)
+	}
+}
+
+// RefreshAccountResetCredits queries upstream reset credit count & expirations for a shared
+// OpenAI OAuth account using a per-account singleflight + 60s cooldown cache so subscriber refreshes
+// cannot flood upstream APIs, and returns strictly redacted credit count & expiration timestamps.
+func (s *CustomSubscriberResetVoteService) RefreshAccountResetCredits(
+	ctx context.Context,
+	accountID int64,
+) (*SubscriberAccountResetCreditsResult, error) {
+	if s == nil || s.accounts == nil || s.quota == nil {
+		return nil, infraerrors.ServiceUnavailable("RESET_CREDITS_UNAVAILABLE", "Reset credit query service is unavailable")
+	}
+	if accountID <= 0 {
+		return nil, infraerrors.BadRequest("RESET_CREDITS_INVALID_ACCOUNT", "Valid account ID is required")
+	}
+
+	acc, err := s.accounts.GetByID(ctx, accountID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, infraerrors.NotFound("ACCOUNT_NOT_FOUND", "Account not found")
+		}
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_LOOKUP_FAILED", "Failed to load account")
+	}
+	if acc == nil || acc.Platform != PlatformOpenAI || acc.Type != AccountTypeOAuth || acc.IsCredentialShadow() || acc.IsSyntheticUITest() || !IsAccountSubscriberVisible(acc) {
+		return nil, infraerrors.Conflict("RESET_CREDITS_UNSUPPORTED_ACCOUNT", "Account does not support reset credit queries")
+	}
+
+	now := s.now().UTC()
+	s.creditRefreshMu.Lock()
+	if s.creditRefreshCache != nil {
+		if cached, ok := s.creditRefreshCache[accountID]; ok && now.Sub(cached.cachedAt) < subscriberResetCreditRefreshCooldown {
+			s.creditRefreshMu.Unlock()
+			return cloneSubscriberResetCreditsResult(cached.result), nil
+		}
+	}
+	s.creditRefreshMu.Unlock()
+
+	key := fmt.Sprintf("%d", accountID)
+	val, err, _ := s.creditRefreshGroup.Do(key, func() (any, error) {
+		queryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriberResetCreditRefreshTimeout)
+		defer cancel()
+
+		usage, queryErr := s.quota.QueryUsage(queryCtx, accountID)
+		if queryErr != nil {
+			slog.Warn("subscriber_reset_credits_query_failed", "account_id", accountID, "error", queryErr)
+			code := infraerrors.Code(queryErr)
+			if code < 400 || code >= 600 {
+				code = http.StatusBadGateway
+			}
+			reason := infraerrors.Reason(queryErr)
+			if reason == "" {
+				reason = "OPENAI_QUOTA_UPSTREAM_ERROR"
+			}
+			return nil, infraerrors.New(code, reason, "Failed to query reset credit availability")
+		}
+		if usage == nil {
+			return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_EMPTY_USAGE", "Reset credit query returned an empty result")
+		}
+
+		sanitizedCredits := sanitizeOpenAIRateLimitResetCredits(usage.RateLimitResetCredits)
+		cachePersisted := false
+		if cacheErr := s.quota.CacheResetCreditsSnapshot(queryCtx, accountID, sanitizedCredits); cacheErr != nil {
+			slog.Warn("subscriber_reset_credits_cache_failed", "account_id", accountID, "error", cacheErr)
+		} else {
+			cachePersisted = true
+		}
+
+		fetchedAt := usage.FetchedAt
+		if fetchedAt <= 0 {
+			fetchedAt = s.now().Unix()
+		}
+		res := SubscriberAccountResetCreditsResult{
+			RateLimitResetCredits: sanitizedCredits,
+			FetchedAt:             fetchedAt,
+			CachePersisted:        cachePersisted,
+		}
+
+		s.creditRefreshMu.Lock()
+		if s.creditRefreshCache == nil {
+			s.creditRefreshCache = make(map[int64]cachedSubscriberResetCredits)
+		}
+		s.creditRefreshCache[accountID] = cachedSubscriberResetCredits{
+			cachedAt: s.now().UTC(),
+			result:   res,
+		}
+		s.creditRefreshMu.Unlock()
+
+		return cloneSubscriberResetCreditsResult(res), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, ok := val.(*SubscriberAccountResetCreditsResult)
+	if !ok || result == nil {
+		return nil, infraerrors.InternalServer("RESET_CREDITS_INVALID_RESULT", "Invalid reset credit refresh result")
+	}
+	return cloneSubscriberResetCreditsResult(*result), nil
+}
+
+// GetAdminAccountVoteDetails returns admin-facing details for a shared OpenAI OAuth parent
+// account, listing voters in the current 24-hour cycle alongside eligible subscribers who have
+// not voted yet (plus a summary of the most recent expired cycle when idle).
+func (s *CustomSubscriberResetVoteService) GetAdminAccountVoteDetails(
+	ctx context.Context,
+	accountID int64,
+) (*AdminAccountResetVoteDetails, error) {
+	if s == nil || s.db == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("RESET_VOTE_UNAVAILABLE", "Reset voting service is unavailable")
+	}
+	if accountID <= 0 {
+		return nil, infraerrors.BadRequest("RESET_VOTE_INVALID_ACCOUNT", "Valid account ID is required")
+	}
+
+	acc, err := s.accounts.GetByID(ctx, accountID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, infraerrors.NotFound("ACCOUNT_NOT_FOUND", "Account not found")
+		}
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_LOOKUP_FAILED", "Failed to load account")
+	}
+	if acc == nil {
+		return nil, infraerrors.NotFound("ACCOUNT_NOT_FOUND", "Account not found")
+	}
+
+	now := s.now().UTC()
+	eligibleParticipants, groupNamesByUser, err := s.queryEligibleSubscribersForAccount(ctx, accountID, now)
+	if err != nil {
+		return nil, err
+	}
+
+	details := &AdminAccountResetVoteDetails{
+		AccountID:     acc.ID,
+		AccountName:   acc.Name,
+		Supported:     isVoteSupportedOpenAIAccount(acc),
+		Status:        SubscriberResetVoteStatusNone,
+		Threshold:     SubscriberResetVoteThreshold,
+		EligibleCount: len(eligibleParticipants),
+		Voters:        make([]SubscriberResetVoteParticipant, 0),
+		NonVoters:     make([]SubscriberResetVoteParticipant, 0),
+	}
+
+	round, err := s.queryAdminLatestRound(ctx, accountID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	if round != nil {
+		voters, vErr := s.queryRoundVoters(ctx, round.ID, round.InitiatorUserID, groupNamesByUser)
+		if vErr != nil {
+			return nil, vErr
+		}
+		if round.ExpiresAt.After(now) {
+			projected := s.projectVoteRoundState(false, "", round, now)
+			details.RoundID = projected.RoundID
+			details.Status = projected.Status
+			details.VoteCount = projected.VoteCount
+			details.Threshold = projected.Threshold
+			details.InitiatedAt = projected.InitiatedAt
+			details.ExpiresAt = projected.ExpiresAt
+			details.TriggeredAt = projected.TriggeredAt
+			details.CompletedAt = projected.CompletedAt
+			details.CardStatus = projected.CardStatus
+			details.SubscriptionResetStatus = projected.SubscriptionResetStatus
+			details.SubscriptionResetCount = projected.SubscriptionResetCount
+			details.ErrorCode = projected.ErrorCode
+			details.ErrorMessage = projected.ErrorMessage
+			details.WarningCode = projected.WarningCode
+			details.CooldownActive = projected.CooldownActive
+			details.Voters = voters
+
+			votedIDs := make(map[int64]struct{}, len(voters))
+			for _, v := range voters {
+				votedIDs[v.UserID] = struct{}{}
+			}
+			for _, p := range eligibleParticipants {
+				if _, voted := votedIDs[p.UserID]; !voted {
+					details.NonVoters = append(details.NonVoters, p)
+				}
+			}
+			return details, nil
+		}
+
+		details.LastRound = &AdminAccountResetVoteRoundBrief{
+			RoundID:                 round.ID,
+			Status:                  round.Status,
+			VoteCount:               len(voters),
+			Threshold:               max(round.Threshold, SubscriberResetVoteThreshold),
+			InitiatedAt:             round.InitiatedAt,
+			ExpiresAt:               round.ExpiresAt,
+			CompletedAt:             round.CompletedAt,
+			CardStatus:              round.CardStatus,
+			SubscriptionResetStatus: round.SubscriptionResetStatus,
+			SubscriptionResetCount:  round.SubscriptionResetCount,
+			Voters:                  voters,
+		}
+	}
+
+	details.NonVoters = append(details.NonVoters, eligibleParticipants...)
+	return details, nil
+}
+
+func (s *CustomSubscriberResetVoteService) queryAdminLatestRound(ctx context.Context, accountID int64) (*subscriberResetVoteRoundRow, error) {
+	var row subscriberResetVoteRoundRow
+	var triggeredAt, completedAt sql.NullTime
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT
+			r.id,
+			r.account_id,
+			r.initiator_user_id,
+			r.threshold,
+			r.status,
+			r.request_id,
+			r.initiated_at,
+			r.expires_at,
+			r.triggered_at,
+			r.completed_at,
+			r.card_status,
+			r.subscription_reset_status,
+			r.subscription_reset_count,
+			r.error_code,
+			r.error_message,
+			r.warning_code,
+			(SELECT COUNT(*) FROM custom_subscriber_reset_vote_voters v WHERE v.round_id = r.id) AS vote_count
+		 FROM custom_subscriber_reset_vote_rounds r
+		 WHERE r.account_id = $1
+		 ORDER BY r.id DESC
+		 LIMIT 1`,
+		accountID,
+	).Scan(
+		&row.ID,
+		&row.AccountID,
+		&row.InitiatorUserID,
+		&row.Threshold,
+		&row.Status,
+		&row.RequestID,
+		&row.InitiatedAt,
+		&row.ExpiresAt,
+		&triggeredAt,
+		&completedAt,
+		&row.CardStatus,
+		&row.SubscriptionResetStatus,
+		&row.SubscriptionResetCount,
+		&row.ErrorCode,
+		&row.ErrorMessage,
+		&row.WarningCode,
+		&row.VoteCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if triggeredAt.Valid {
+		t := triggeredAt.Time
+		row.TriggeredAt = &t
+	}
+	if completedAt.Valid {
+		t := completedAt.Time
+		row.CompletedAt = &t
+	}
+	return &row, nil
+}
+
+func (s *CustomSubscriberResetVoteService) queryRoundVoters(
+	ctx context.Context,
+	roundID, initiatorUserID int64,
+	groupNamesByUser map[int64][]string,
+) ([]SubscriberResetVoteParticipant, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT v.user_id, COALESCE(u.username, ''), COALESCE(u.email, ''), v.created_at
+		 FROM custom_subscriber_reset_vote_voters v
+		 LEFT JOIN users u ON u.id = v.user_id
+		 WHERE v.round_id = $1
+		 ORDER BY v.created_at ASC, v.id ASC`,
+		roundID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	voters := make([]SubscriberResetVoteParticipant, 0)
+	for rows.Next() {
+		var p SubscriberResetVoteParticipant
+		var votedAt time.Time
+		if scanErr := rows.Scan(&p.UserID, &p.Username, &p.Email, &votedAt); scanErr != nil {
+			return nil, scanErr
+		}
+		votedCopy := votedAt
+		p.VotedAt = &votedCopy
+		p.IsInitiator = p.UserID == initiatorUserID
+		if names := groupNamesByUser[p.UserID]; len(names) > 0 {
+			p.GroupNames = append([]string(nil), names...)
+		}
+		voters = append(voters, p)
+	}
+	return voters, rows.Err()
+}
+
+func (s *CustomSubscriberResetVoteService) queryEligibleSubscribersForAccount(
+	ctx context.Context,
+	accountID int64,
+	now time.Time,
+) ([]SubscriberResetVoteParticipant, map[int64][]string, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT u.id, COALESCE(u.username, ''), COALESCE(u.email, ''), COALESCE(g.name, '')
+		 FROM user_subscriptions us
+		 JOIN users u ON u.id = us.user_id
+		 JOIN account_groups ag ON ag.group_id = us.group_id
+		 JOIN groups g ON g.id = us.group_id
+		 WHERE ag.account_id = $1
+		   AND us.deleted_at IS NULL
+		   AND u.deleted_at IS NULL
+		   AND g.deleted_at IS NULL
+		   AND us.status = $2
+		   AND us.starts_at <= $3
+		   AND us.expires_at > $3
+		   AND g.subscription_type = $4
+		 ORDER BY u.id ASC, g.name ASC`,
+		accountID,
+		StatusActive,
+		now,
+		SubscriptionTypeSubscription,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	byUser := make(map[int64]*SubscriberResetVoteParticipant)
+	groupSeen := make(map[int64]map[string]struct{})
+	orderedIDs := make([]int64, 0)
+
+	for rows.Next() {
+		var userID int64
+		var username, email, groupName string
+		if scanErr := rows.Scan(&userID, &username, &email, &groupName); scanErr != nil {
+			return nil, nil, scanErr
+		}
+		entry, exists := byUser[userID]
+		if !exists {
+			entry = &SubscriberResetVoteParticipant{
+				UserID:   userID,
+				Username: username,
+				Email:    email,
+			}
+			byUser[userID] = entry
+			groupSeen[userID] = make(map[string]struct{})
+			orderedIDs = append(orderedIDs, userID)
+		}
+		groupName = strings.TrimSpace(groupName)
+		if groupName != "" {
+			if _, dup := groupSeen[userID][groupName]; !dup {
+				groupSeen[userID][groupName] = struct{}{}
+				entry.GroupNames = append(entry.GroupNames, groupName)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	participants := make([]SubscriberResetVoteParticipant, 0, len(orderedIDs))
+	groupNamesByUser := make(map[int64][]string, len(orderedIDs))
+	for _, userID := range orderedIDs {
+		p := *byUser[userID]
+		if len(p.GroupNames) > 0 {
+			groupNamesByUser[userID] = append([]string(nil), p.GroupNames...)
+		}
+		participants = append(participants, p)
+	}
+	sort.SliceStable(participants, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(participants[i].Username))
+		if left == "" {
+			left = strings.ToLower(strings.TrimSpace(participants[i].Email))
+		}
+		right := strings.ToLower(strings.TrimSpace(participants[j].Username))
+		if right == "" {
+			right = strings.ToLower(strings.TrimSpace(participants[j].Email))
+		}
+		if left != right {
+			return left < right
+		}
+		return participants[i].UserID < participants[j].UserID
+	})
+	return participants, groupNamesByUser, nil
 }

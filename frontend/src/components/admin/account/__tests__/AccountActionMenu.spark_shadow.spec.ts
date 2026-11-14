@@ -197,4 +197,34 @@ describe('AccountActionMenu — spark shadow 按钮可见性', () => {
 
     wrapper.unmount()
   })
+
+  it('OpenAI OAuth 母账号显示并触发「投票情况」操作，影子与非 OpenAI 账号隐藏', async () => {
+    const parent = makeAccount({ platform: 'openai', type: 'oauth', parent_account_id: null })
+    const parentWrapper = mount(AccountActionMenu, {
+      props: { show: true, account: parent, anchorRect },
+      attachTo: document.body,
+    })
+
+    const voteBtn = getBodyButtons().find(
+      b => b.getAttribute('data-testid') === 'account-reset-votes-action'
+    )
+    expect(voteBtn).toBeDefined()
+    voteBtn!.click()
+    await parentWrapper.vm.$nextTick()
+
+    const emitted = parentWrapper.emitted('reset-votes')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0][0]).toMatchObject({ id: parent.id })
+    parentWrapper.unmount()
+
+    const shadow = makeAccount({ platform: 'openai', type: 'oauth', parent_account_id: 99 })
+    const shadowWrapper = mount(AccountActionMenu, {
+      props: { show: true, account: shadow, anchorRect },
+      attachTo: document.body,
+    })
+    expect(
+      getBodyButtons().some(b => b.getAttribute('data-testid') === 'account-reset-votes-action')
+    ).toBe(false)
+    shadowWrapper.unmount()
+  })
 })

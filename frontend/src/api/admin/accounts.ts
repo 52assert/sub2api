@@ -964,6 +964,59 @@ export interface OpenAIQuotaRefreshResult extends OpenAIQuotaUsage {
   credits_cache_persisted?: boolean
 }
 
+export interface ResetVoteParticipant {
+  user_id: number
+  username: string
+  email: string
+  group_names?: string[]
+  voted_at?: string
+  is_initiator?: boolean
+}
+
+export interface AdminAccountResetVoteRoundBrief {
+  round_id: number
+  status: string
+  vote_count: number
+  threshold: number
+  initiated_at: string
+  expires_at: string
+  completed_at?: string
+  card_status?: string
+  subscription_reset_status?: string
+  subscription_reset_count?: number
+  voters: ResetVoteParticipant[]
+}
+
+export interface AdminAccountResetVoteDetails {
+  account_id: number
+  account_name: string
+  supported: boolean
+  status: 'none' | 'open' | 'executing' | 'succeeded' | 'failed' | string
+  round_id?: number
+  vote_count: number
+  threshold: number
+  eligible_count: number
+  initiated_at?: string
+  expires_at?: string
+  triggered_at?: string
+  completed_at?: string
+  card_status?: string
+  subscription_reset_status?: string
+  subscription_reset_count?: number
+  error_code?: string
+  error_message?: string
+  warning_code?: string
+  cooldown_active: boolean
+  voters: ResetVoteParticipant[]
+  non_voters: ResetVoteParticipant[]
+  last_round?: AdminAccountResetVoteRoundBrief | null
+}
+
+export async function getAccountResetVotes(id: number): Promise<AdminAccountResetVoteDetails> {
+  const { data } = await apiClient.get<AdminAccountResetVoteDetails>(`/admin/accounts/${id}/reset-votes`)
+  return data
+}
+
 /**
  * Query the upstream quota AND persist the reset-credit snapshot on the account
  * so the card can be rehydrated without an upstream round-trip. It is a POST
@@ -1193,6 +1246,7 @@ export const accountsAPI = {
   revertProxyFallback,
   refreshOpenAIQuota,
   resetOpenAIQuota,
+  getAccountResetVotes,
   createSparkShadow,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,

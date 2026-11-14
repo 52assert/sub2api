@@ -164,7 +164,29 @@ export default {
       triggeredSuccess: '已满 3 票，重置卡使用成功，已重置 {count} 个订阅额度',
       triggeredSuccessWarning: '重置卡与订阅额度重置已完成，部分缓存刷新需稍后同步',
       failedToast: '投票已计入，但重置执行失败：{reason}',
-      requestFailed: '投票请求失败'
+      requestFailed: '投票请求失败',
+      adminDetailsButton: '投票明细',
+      adminModalTitle: '重置投票情况',
+      menuAction: '投票情况',
+      eligibleCount: '可投票成员',
+      votersSection: '已投票成员 ({count})',
+      nonVotersSection: '未投票成员 ({count})',
+      initiatorTag: '发起人',
+      votedAtColumn: '投票时间',
+      memberColumn: '成员',
+      groupsColumn: '订阅分组',
+      noVotersYet: '本轮暂无成员投票',
+      allVoted: '所有可投票订阅成员均已投票',
+      noEligibleMembers: '该账号当前暂无有效的订阅分组成员',
+      lastRoundSummary: '上一轮已过期记录（超过 24 小时）',
+      statusNone: '本轮未发起',
+      loadFailed: '加载投票情况失败',
+      unsupportedHint: '仅支持对订阅用户可见的 OpenAI OAuth 母账号'
+    },
+    resetCredits: {
+      count: '重置卡',
+      countTooltipLoad: '点击查询重置卡数量和到期时间',
+      countTooltipRefresh: '点击刷新重置卡数量和到期时间'
     }
   },
 

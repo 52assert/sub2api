@@ -167,7 +167,29 @@ export default {
       triggeredSuccess: 'Threshold reached: reset card applied and {count} subscription(s) reset',
       triggeredSuccessWarning: 'Reset completed, but cache refresh needs attention',
       failedToast: 'Vote recorded, but reset failed: {reason}',
-      requestFailed: 'Failed to submit vote'
+      requestFailed: 'Failed to submit vote',
+      adminDetailsButton: 'Vote details',
+      adminModalTitle: 'Reset Vote Status',
+      menuAction: 'Reset Vote Status',
+      eligibleCount: 'Eligible Members',
+      votersSection: 'Voted ({count})',
+      nonVotersSection: 'Not Voted Yet ({count})',
+      initiatorTag: 'Initiator',
+      votedAtColumn: 'Voted At',
+      memberColumn: 'Member',
+      groupsColumn: 'Subscription Groups',
+      noVotersYet: 'No members have voted in this cycle yet.',
+      allVoted: 'All eligible subscription members have voted.',
+      noEligibleMembers: 'No active subscription-group members for this account.',
+      lastRoundSummary: 'Previous Cycle (24h Window Expired)',
+      statusNone: 'No Active Vote',
+      loadFailed: 'Failed to load reset vote details',
+      unsupportedHint: 'Only available for subscriber-visible OpenAI OAuth parent accounts.'
+    },
+    resetCredits: {
+      count: 'Reset cards',
+      countTooltipLoad: 'Click to query reset card count and expiration times',
+      countTooltipRefresh: 'Click to refresh reset card count and expiration times'
     }
   },
 

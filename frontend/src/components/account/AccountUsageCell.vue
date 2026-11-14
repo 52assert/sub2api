@@ -156,12 +156,13 @@
           single row of related buttons instead of two stacked rows.
         -->
         <OpenAIQuotaResetCell
-          v-if="!readonly"
           :account="account"
+          :readonly="readonly"
           @account-updated="handleQuotaResetAccountUpdated"
         >
           <template #pre-actions>
             <button
+              v-if="!readonly"
               type="button"
               class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               :disabled="activeQueryLoading || loading"
@@ -202,8 +203,8 @@
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
-          v-if="!readonly"
           :account="account"
+          :readonly="readonly"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
         />

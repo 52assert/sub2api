@@ -69,6 +69,10 @@ func (*subscriberVoteIntegrationQuota) CachePostResetSnapshot(context.Context, i
 	return nil
 }
 
+func (*subscriberVoteIntegrationQuota) CacheResetCreditsSnapshot(context.Context, int64, *OpenAIRateLimitResetCredits) error {
+	return nil
+}
+
 type subscriberVoteIntegrationRecoverer struct{}
 
 func (*subscriberVoteIntegrationRecoverer) RecoverAccountState(context.Context, int64, AccountRecoveryOptions) (*SuccessfulTestRecoveryResult, error) {
@@ -114,7 +118,7 @@ func customSubscriberResetVoteTestDB(t *testing.T) *sql.DB {
 	db.SetMaxOpenConns(32)
 
 	_, err = db.Exec(`
-		CREATE TABLE users(id BIGINT PRIMARY KEY, email TEXT, deleted_at TIMESTAMPTZ);
+		CREATE TABLE users(id BIGINT PRIMARY KEY, username TEXT NOT NULL DEFAULT '', email TEXT, deleted_at TIMESTAMPTZ);
 		CREATE TABLE accounts(id BIGINT PRIMARY KEY, platform TEXT, type TEXT, status TEXT, credentials JSONB DEFAULT '{"chatgpt_account_id":"stable-id"}', extra JSONB DEFAULT '{"subscriber_visible":true}', deleted_at TIMESTAMPTZ);
 		CREATE TABLE groups(id BIGINT PRIMARY KEY, name TEXT, subscription_type TEXT NOT NULL DEFAULT 'subscription', deleted_at TIMESTAMPTZ);
 		CREATE TABLE account_groups(account_id BIGINT REFERENCES accounts(id), group_id BIGINT REFERENCES groups(id), PRIMARY KEY(account_id, group_id));
@@ -239,12 +243,29 @@ func TestCustomSubscriberResetVotesEndToEnd(t *testing.T) {
 	_, err = svc.CastVote(ctx, 1, 10)
 	require.Equal(t, "RESET_VOTE_COOLDOWN_ACTIVE", infraerrors.Reason(err))
 
-	// Advance time past 24 hours -> fresh vote round can be initiated cleanly.
+	// Advance time past 24 hours -> expired previous round shows in LastRound; fresh eligible non-voters are all 4.
 	now = now.Add(24*time.Hour + time.Second)
+	expiredAdminDetails, err := svc.GetAdminAccountVoteDetails(ctx, 10)
+	require.NoError(t, err)
+	require.Equal(t, SubscriberResetVoteStatusNone, expiredAdminDetails.Status)
+	require.Empty(t, expiredAdminDetails.Voters)
+	require.Len(t, expiredAdminDetails.NonVoters, 4)
+	require.NotNil(t, expiredAdminDetails.LastRound)
+	require.Len(t, expiredAdminDetails.LastRound.Voters, 3)
+
+	// Fresh vote round can now be initiated cleanly, and admin sees exact voter vs non-voters.
 	reinitRes, err := svc.CastVote(ctx, 1, 10)
 	require.NoError(t, err)
 	require.True(t, reinitRes.VoteRecorded)
 	require.False(t, reinitRes.TriggeredReset)
 	require.Equal(t, 1, reinitRes.State.VoteCount)
 	require.Equal(t, SubscriberResetVoteStatusOpen, reinitRes.State.Status)
+
+	openAdminDetails, err := svc.GetAdminAccountVoteDetails(ctx, 10)
+	require.NoError(t, err)
+	require.Equal(t, SubscriberResetVoteStatusOpen, openAdminDetails.Status)
+	require.Len(t, openAdminDetails.Voters, 1)
+	require.Equal(t, int64(1), openAdminDetails.Voters[0].UserID)
+	require.True(t, openAdminDetails.Voters[0].IsInitiator)
+	require.Len(t, openAdminDetails.NonVoters, 3)
 }

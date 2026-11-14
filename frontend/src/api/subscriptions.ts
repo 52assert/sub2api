@@ -171,6 +171,24 @@ export async function castSubscriberAccountResetVote(
   return data
 }
 
+export interface SubscriberAccountResetCreditsResult {
+  rate_limit_reset_credits?: {
+    available_count: number
+    credits?: { expires_at?: string }[]
+  } | null
+  fetched_at: number
+  cache_persisted: boolean
+}
+
+export async function refreshSubscriberAccountResetCredits(
+  accountId: number
+): Promise<SubscriberAccountResetCreditsResult> {
+  const { data } = await apiClient.post<SubscriberAccountResetCreditsResult>(
+    `/subscriptions/accounts/${accountId}/reset-credits/refresh`
+  )
+  return data
+}
+
 export default {
   getMySubscriptions,
   getActiveSubscriptions,
@@ -180,5 +198,6 @@ export default {
   listSubscriberAccounts,
   getSubscriberAccountsBatchTodayStats,
   getSubscriberAccountsBatchUsage,
-  castSubscriberAccountResetVote
+  castSubscriberAccountResetVote,
+  refreshSubscriberAccountResetCredits
 }

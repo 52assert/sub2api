@@ -3,13 +3,16 @@ package admin
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -88,6 +91,8 @@ type SubscriberAccountItem struct {
 
 type subscriberResetVoteReader interface {
 	GetStatesForAccounts(ctx context.Context, userID int64, accounts []*service.Account) (map[int64]*service.SubscriberResetVoteState, error)
+	RefreshAccountResetCredits(ctx context.Context, accountID int64) (*service.SubscriberAccountResetCreditsResult, error)
+	GetAdminAccountVoteDetails(ctx context.Context, accountID int64) (*service.AdminAccountResetVoteDetails, error)
 }
 
 // SetSubscriberResetVoteService wires the subscriber reset vote reader into AccountHandler.
@@ -212,6 +217,61 @@ func sanitizeSubscriberCredentials(creds map[string]any) map[string]any {
 	return out
 }
 
+func sanitizeSubscriberResetCreditSnapshot(val any) map[string]any {
+	raw, ok := val.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	var count int
+	countSet := false
+	switch v := raw["available_count"].(type) {
+	case int:
+		count = v
+		countSet = true
+	case int64:
+		count = int(v)
+		countSet = true
+	case float64:
+		count = int(v)
+		countSet = true
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			count = int(parsed)
+			countSet = true
+		}
+	}
+	if !countSet {
+		return nil
+	}
+	if count < 0 {
+		count = 0
+	}
+
+	credits := make([]map[string]string, 0)
+	if rawCredits, ok := raw["credits"].([]any); ok {
+		for _, entry := range rawCredits {
+			item, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			expiresAt, ok := item["expires_at"].(string)
+			if !ok {
+				continue
+			}
+			expiresAt = strings.TrimSpace(expiresAt)
+			if expiresAt == "" {
+				continue
+			}
+			credits = append(credits, map[string]string{"expires_at": expiresAt})
+		}
+	}
+
+	return map[string]any{
+		"available_count": count,
+		"credits":         credits,
+	}
+}
+
 func sanitizeSubscriberExtra(extra map[string]any) map[string]any {
 	if len(extra) == 0 {
 		return nil
@@ -219,6 +279,12 @@ func sanitizeSubscriberExtra(extra map[string]any) map[string]any {
 	out := make(map[string]any)
 	for key, val := range extra {
 		if val == nil {
+			continue
+		}
+		if key == "codex_reset_credit_snapshot" {
+			if safeSnapshot := sanitizeSubscriberResetCreditSnapshot(val); safeSnapshot != nil {
+				out[key] = safeSnapshot
+			}
 			continue
 		}
 		if key == "load_code_assist" {
@@ -734,4 +800,53 @@ func (h *AccountHandler) GetSubscriberBatchUsage(
 		"usage":  usageByAccount,
 		"errors": errorsByAccount,
 	})
+}
+
+// RefreshSubscriberResetCredits queries and caches live OpenAI reset-credit availability and
+// expiration timestamps for a single subscriber-authorized account.
+func (h *AccountHandler) RefreshSubscriberResetCredits(
+	c *gin.Context,
+	accountID int64,
+	allowedGroupIDs map[int64]struct{},
+	isAdmin bool,
+) {
+	authorizedIDs, err := h.filterAuthorizedSubscriberAccountIDs(c, []int64{accountID}, allowedGroupIDs, isAdmin)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if len(authorizedIDs) == 0 {
+		response.ErrorFrom(c, infraerrors.Forbidden("SUBSCRIBER_ACCOUNT_FORBIDDEN", "Not authorized to access this account"))
+		return
+	}
+	if h.subscriberResetVotes == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Reset credit service unavailable")
+		return
+	}
+	res, err := h.subscriberResetVotes.RefreshAccountResetCredits(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+// GetAccountResetVotes returns admin-only reset vote round details including voters and non-voters.
+// GET /api/v1/admin/accounts/:id/reset-votes
+func (h *AccountHandler) GetAccountResetVotes(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.subscriberResetVotes == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Reset voting service unavailable")
+		return
+	}
+	details, err := h.subscriberResetVotes.GetAdminAccountVoteDetails(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, details)
 }

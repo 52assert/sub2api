@@ -40,14 +40,18 @@ type stubVoteQuotaClient struct {
 	requestIDRes *OpenAIQuotaResetResult
 	requestIDErr error
 
-	targetedCalls   int
-	lastCreditID    string
-	lastRequestID   string
-	requestIDCalls  int
-	cachedSnapshots int
+	queryCalls            int
+	targetedCalls         int
+	lastCreditID          string
+	lastRequestID         string
+	requestIDCalls        int
+	cachedSnapshots       int
+	cacheResetCreditCalls int
+	cacheResetCreditErr   error
 }
 
 func (q *stubVoteQuotaClient) QueryUsage(context.Context, int64) (*OpenAIQuotaUsage, error) {
+	q.queryCalls++
 	if q.queryErr != nil {
 		return nil, q.queryErr
 	}
@@ -70,6 +74,11 @@ func (q *stubVoteQuotaClient) ResetCreditWithRequestID(_ context.Context, _ int6
 func (q *stubVoteQuotaClient) CachePostResetSnapshot(context.Context, int64, *OpenAIQuotaUsage) error {
 	q.cachedSnapshots++
 	return nil
+}
+
+func (q *stubVoteQuotaClient) CacheResetCreditsSnapshot(context.Context, int64, *OpenAIRateLimitResetCredits) error {
+	q.cacheResetCreditCalls++
+	return q.cacheResetCreditErr
 }
 
 type stubVoteRecoverer struct {
@@ -560,4 +569,123 @@ func TestCustomSubscriberResetVoteThresholdTriggerAndFailures(t *testing.T) {
 		require.Equal(t, "failed", res.State.SubscriptionResetStatus)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+func TestCustomSubscriberResetVoteRefreshResetCreditsCooldownAndSanitization(t *testing.T) {
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	quota := &stubVoteQuotaClient{
+		usage: &OpenAIQuotaUsage{
+			UserID:    "SECRET_USER_ID",
+			Email:     "secret@example.com",
+			FetchedAt: now.Unix(),
+			RateLimitResetCredits: &OpenAIRateLimitResetCredits{
+				AvailableCount: 2,
+				Credits: []OpenAIRateLimitResetCreditDetail{
+					{ExpiresAt: " 2026-11-20T00:00:00Z "},
+					{ExpiresAt: ""},
+					{ExpiresAt: "2026-11-18T00:00:00Z"},
+				},
+			},
+		},
+	}
+	svc := newCustomSubscriberResetVoteServiceWithDeps(nil, &stubVoteAccountRepo{
+		byID: map[int64]*Account{
+			1: makeVoteTestOpenAIAccount(1),
+			2: {ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{SubscriberVisibleExtraKey: true}},
+		},
+	}, quota, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	// Unsupported account is rejected cleanly.
+	_, err := svc.RefreshAccountResetCredits(context.Background(), 2)
+	require.Error(t, err)
+	require.Equal(t, "RESET_CREDITS_UNSUPPORTED_ACCOUNT", infraerrors.Reason(err))
+
+	// First refresh queries upstream once and caches result.
+	res1, err := svc.RefreshAccountResetCredits(context.Background(), 1)
+	require.NoError(t, err)
+	require.True(t, res1.CachePersisted)
+	require.Equal(t, 1, quota.queryCalls)
+	require.Equal(t, 1, quota.cacheResetCreditCalls)
+	require.NotNil(t, res1.RateLimitResetCredits)
+	require.Equal(t, 2, res1.RateLimitResetCredits.AvailableCount)
+	require.Len(t, res1.RateLimitResetCredits.Credits, 2)
+	require.Equal(t, "2026-11-20T00:00:00Z", res1.RateLimitResetCredits.Credits[0].ExpiresAt)
+
+	// Immediate second refresh hits in-memory cooldown without hitting upstream again.
+	now = now.Add(30 * time.Second)
+	res2, err := svc.RefreshAccountResetCredits(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, quota.queryCalls)
+	require.Equal(t, 2, res2.RateLimitResetCredits.AvailableCount)
+
+	// After 60s cooldown expires, queries upstream again.
+	now = now.Add(31 * time.Second)
+	_, err = svc.RefreshAccountResetCredits(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 2, quota.queryCalls)
+}
+
+func TestCustomSubscriberResetVoteGetAdminDetails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	acc := makeVoteTestOpenAIAccount(10)
+	acc.Name = "Pro200 Milo"
+	svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+		byID: map[int64]*Account{10: acc},
+	}, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT u.id, COALESCE(u.username, ''), COALESCE(u.email, ''), COALESCE(g.name, '')`)).
+		WithArgs(int64(10), StatusActive, now, SubscriptionTypeSubscription).
+		WillReturnRows(
+			sqlmock.NewRows([]string{"id", "username", "email", "name"}).
+				AddRow(int64(1), "alice", "alice@example.com", "GPT Pro20x").
+				AddRow(int64(2), "bob", "bob@example.com", "GPT Pro20x").
+				AddRow(int64(3), "", "charlie@example.com", "GPT Pro20x"),
+		)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM custom_subscriber_reset_vote_rounds r`)).
+		WithArgs(int64(10)).
+		WillReturnRows(
+			sqlmock.NewRows([]string{
+				"id", "account_id", "initiator_user_id", "threshold", "status", "request_id",
+				"initiated_at", "expires_at", "triggered_at", "completed_at",
+				"card_status", "subscription_reset_status", "subscription_reset_count",
+				"error_code", "error_message", "warning_code", "vote_count",
+			}).AddRow(
+				int64(55), int64(10), int64(2), 3, "open", "req-55",
+				now.Add(-2*time.Hour), now.Add(22*time.Hour), nil, nil,
+				"pending", "pending", 0, "", "", "", 1,
+			),
+		)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM custom_subscriber_reset_vote_voters v`)).
+		WithArgs(int64(55)).
+		WillReturnRows(
+			sqlmock.NewRows([]string{"user_id", "username", "email", "created_at"}).
+				AddRow(int64(2), "bob", "bob@example.com", now.Add(-2*time.Hour)),
+		)
+
+	details, err := svc.GetAdminAccountVoteDetails(context.Background(), 10)
+	require.NoError(t, err)
+	require.Equal(t, "Pro200 Milo", details.AccountName)
+	require.True(t, details.Supported)
+	require.Equal(t, SubscriberResetVoteStatusOpen, details.Status)
+	require.Equal(t, 1, details.VoteCount)
+	require.Equal(t, 3, details.EligibleCount)
+
+	require.Len(t, details.Voters, 1)
+	require.Equal(t, int64(2), details.Voters[0].UserID)
+	require.Equal(t, "bob", details.Voters[0].Username)
+	require.True(t, details.Voters[0].IsInitiator)
+	require.Equal(t, []string{"GPT Pro20x"}, details.Voters[0].GroupNames)
+
+	require.Len(t, details.NonVoters, 2)
+	require.Equal(t, int64(1), details.NonVoters[0].UserID)
+	require.Equal(t, int64(3), details.NonVoters[1].UserID)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

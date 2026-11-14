@@ -407,6 +407,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.GET("/:id/subscription-reset", h.Admin.Account.SubscriptionResetPreview)
 		accounts.PUT("/:id/subscription-reset", h.Admin.Account.ConfigureSubscriptionReset)
 		accounts.POST("/:id/subscription-reset", h.Admin.Account.ResetGroupSubscriptions)
+		accounts.GET("/:id/reset-votes", h.Admin.Account.GetAccountResetVotes)
 		accounts.POST("/:id/recover-state", h.Admin.Account.RecoverState)
 		accounts.POST("/:id/refresh", h.Admin.Account.Refresh)
 		accounts.POST("/:id/apply-oauth-credentials", h.Admin.Account.ApplyOAuthCredentials)

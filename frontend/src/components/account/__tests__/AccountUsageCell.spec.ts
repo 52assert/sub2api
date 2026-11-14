@@ -2087,4 +2087,61 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('7d S')
     expect(wrapper.text()).not.toContain('7d F')
   })
+
+  it('共享账号 readonly 模式下展示重置卡数量与到期时间并隐藏管理操作', async () => {
+    const requestBatchedUsage = vi.fn()
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        readonly: true,
+        requestBatchedUsage,
+        batchedUsage: {
+          five_hour: {
+            utilization: 25,
+            resets_at: '2099-07-03T10:00:00Z',
+            remaining_seconds: 3600,
+          },
+          seven_day: {
+            utilization: 60,
+            resets_at: '2099-07-06T22:00:00Z',
+            remaining_seconds: 300000,
+          },
+        },
+        account: makeAccount({
+          id: 4001,
+          platform: 'openai',
+          type: 'oauth',
+          rate_limit_reset_at: '2099-03-07T12:00:00Z',
+          extra: {
+            codex_5h_used_percent: 25,
+            codex_7d_used_percent: 60,
+            codex_reset_credit_snapshot: {
+              available_count: 2,
+              credits: [
+                { expires_at: '2099-07-05T04:05:06Z' },
+                { expires_at: '2099-07-03T04:05:06Z' },
+              ],
+            },
+          },
+        }),
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>',
+          },
+          AccountQuotaInfo: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('userSubscriptions.resetCredits.count2')
+    expect(wrapper.find('[data-testid="codex-credits"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="reset-credit-expiry-toggle"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.reset')
+    wrapper.unmount()
+  })
 })

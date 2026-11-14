@@ -4,12 +4,17 @@ import OpenAIQuotaResetCell from '../OpenAIQuotaResetCell.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { Account } from '@/types'
 import { refreshOpenAIQuota, resetOpenAIQuota, type OpenAIQuotaRefreshResult } from '@/api/admin/accounts'
+import { refreshSubscriberAccountResetCredits } from '@/api/subscriptions'
 
 vi.mock('@/api/admin/accounts', () => ({
   refreshOpenAIQuota: vi.fn(),
   resetOpenAIQuota: vi.fn(),
   refreshOpenAIReferrals: vi.fn(),
   sendOpenAIReferralInvite: vi.fn(),
+}))
+
+vi.mock('@/api/subscriptions', () => ({
+  refreshSubscriberAccountResetCredits: vi.fn(),
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -64,6 +69,7 @@ const resetButton = (wrapper: ReturnType<typeof mount>) =>
 beforeEach(() => {
   vi.mocked(refreshOpenAIQuota).mockReset()
   vi.mocked(resetOpenAIQuota).mockReset()
+  vi.mocked(refreshSubscriberAccountResetCredits).mockReset()
 })
 
 describe('OpenAIQuotaResetCell — Codex 点数', () => {
@@ -470,6 +476,59 @@ describe('OpenAIQuotaResetCell 自动用卡运行态', () => {
     })
     const wrapper = mount(OpenAIQuotaResetCell, { props: { account } })
     expect(wrapper.find('[data-testid="auto-reset-credit-state"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('OpenAIQuotaResetCell readonly 共享账号视图', () => {
+  it('rehydrates cached reset cards and hides admin-only points, reset button, and auto-reset status', () => {
+    const account = makeAccount({
+      extra: {
+        auto_reset_credit_enabled: true,
+        codex_auto_reset_credit_state: { status: 'success', available_count: 2 },
+        codex_credits_snapshot: { credits: { has_credits: true, unlimited: false, balance: '50' }, fetched_at: 1770000000 },
+        codex_reset_credit_snapshot: {
+          available_count: 2,
+          credits: [
+            { expires_at: FUTURE_EXPIRY_LATE },
+            { expires_at: FUTURE_EXPIRY_EARLY },
+          ],
+        },
+      },
+    })
+
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account, readonly: true } })
+
+    expect(wrapper.find('[data-testid="codex-credits"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="auto-reset-credit-state"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('userSubscriptions.resetCredits.count2')
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.expiresAt:')
+    expect(wrapper.find('[data-testid="reset-credit-expiry-toggle"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('credit_id')
+    wrapper.unmount()
+  })
+
+  it('refreshes via subscriber endpoint when readonly is true', async () => {
+    vi.mocked(refreshSubscriberAccountResetCredits).mockResolvedValue({
+      rate_limit_reset_credits: {
+        available_count: 1,
+        credits: [{ expires_at: FUTURE_EXPIRY_EARLY }],
+      },
+      fetched_at: 1770000000,
+      cache_persisted: false,
+    })
+
+    const account = makeAccount({ id: 88 })
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account, readonly: true } })
+
+    await wrapper.findAll('button')[0].trigger('click')
+    await flushPromises()
+
+    expect(refreshSubscriberAccountResetCredits).toHaveBeenCalledWith(88)
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('userSubscriptions.resetCredits.count1')
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.expiresAt:')
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.refreshCachePersistFailed')
     wrapper.unmount()
   })
 })
