@@ -135,7 +135,37 @@ export default {
     resetIn: '{time} 后重置',
     quotaEndsIn: '额度将在 {time} 后结束',
     windowNotActive: '等待首次使用',
-    usageOf: '已用 {used} / {limit}'
+    usageOf: '已用 {used} / {limit}',
+    resetVote: {
+      column: '投票重置',
+      hint: '仅该账号订阅分组成员可参与投票（额度分组成员不可投票）。满 3 人自动使用重置卡并重置对应订阅分组已用额度；每次发起 24 小时有效，24 小时内每人限投 1 票，24 小时后可重新发起。',
+      initiate: '发起重置投票',
+      voteAction: '投票重置',
+      triggerVoteAction: '投票触发重置',
+      progress: '{count}/{threshold} 票',
+      votedWaiting: '已投票，待满 {threshold} 票',
+      executing: '正在执行重置...',
+      succeeded: '已投票重置',
+      subscriptionsResetCount: '已重置 {count} 个订阅',
+      failed: '重置未完成',
+      noCredit: '暂无可用重置卡',
+      unknownResult: '重置结果待确认',
+      subscriptionResetFailed: '重置卡已用，但订阅额度重置失败',
+      quotaGroupForbidden: '额度分组不可投票',
+      subscriptionRequired: '仅订阅分组成员可投票',
+      expiresIn: '本轮剩余 {time}',
+      reinitiateIn: '{time} 后可重发起',
+      lessThanOneHour: '不足 1 小时',
+      hoursMinutes: '{hours} 小时 {minutes} 分',
+      confirmTitle: '确认投票并触发重置',
+      confirmMessage: '账号「{name}」当前已有 {count}/{threshold} 票，您投票后将达到 {threshold} 票并立即消耗 1 张重置卡，同时清零对应订阅分组今日/本周已用额度。是否继续？',
+      confirmButton: '确认投票并重置',
+      votedToast: '投票成功（当前 {count}/{threshold} 票）',
+      triggeredSuccess: '已满 3 票，重置卡使用成功，已重置 {count} 个订阅额度',
+      triggeredSuccessWarning: '重置卡与订阅额度重置已完成，部分缓存刷新需稍后同步',
+      failedToast: '投票已计入，但重置执行失败：{reason}',
+      requestFailed: '投票请求失败'
+    }
   },
 
   // Onboarding Tour

@@ -149,6 +149,7 @@ func RegisterUserRoutes(
 			subscriptions.GET("/accounts", h.Subscription.ListSubscriberAccounts)
 			subscriptions.POST("/accounts/today-stats/batch", h.Subscription.GetSubscriberAccountsBatchTodayStats)
 			subscriptions.POST("/accounts/usage/batch", h.Subscription.GetSubscriberAccountsBatchUsage)
+			subscriptions.POST("/accounts/:id/reset-votes", h.Subscription.CastSubscriberAccountResetVote)
 		}
 
 		// 渠道监控（用户只读）

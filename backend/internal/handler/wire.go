@@ -53,9 +53,11 @@ func ProvideAdminHandlers(
 	customCodexReset *service.CustomCodexResetService,
 	accountSchedules *service.CustomAccountScheduleService,
 	claudeResetCredits *service.ClaudeResetCreditService,
+	subscriberResetVotes *service.CustomSubscriberResetVoteService,
 ) *AdminHandlers {
 	accountHandler.SetCustomCodexResetService(customCodexReset)
 	accountHandler.SetCustomAccountScheduleService(accountSchedules)
+	accountHandler.SetSubscriberResetVoteService(subscriberResetVotes)
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
@@ -211,9 +213,13 @@ func ProvideHandlers(
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
+	subscriberResetVotes *service.CustomSubscriberResetVoteService,
 ) *Handlers {
 	if subscriptionHandler != nil && adminHandlers != nil && adminHandlers.Account != nil {
 		subscriptionHandler.SetSubscriberAccountProvider(adminHandlers.Account)
+	}
+	if subscriptionHandler != nil && subscriberResetVotes != nil {
+		subscriptionHandler.SetSubscriberResetVoteManager(subscriberResetVotes)
 	}
 	return &Handlers{
 		IntelligenceTest: intelligenceTestHandler,

@@ -138,7 +138,37 @@ export default {
     resetIn: 'Resets in {time}',
     quotaEndsIn: 'Quota ends in {time}',
     windowNotActive: 'Awaiting first use',
-    usageOf: '{used} of {limit}'
+    usageOf: '{used} of {limit}',
+    resetVote: {
+      column: 'Reset Vote',
+      hint: 'Only active members of this account’s subscription groups can vote (quota/standard group members cannot vote). Reaching 3 votes automatically uses a reset card and resets the corresponding subscription groups’ daily & weekly usage. Each vote round lasts 24 hours; 1 vote per user within 24 hours.',
+      initiate: 'Start Reset Vote',
+      voteAction: 'Vote Reset',
+      triggerVoteAction: 'Vote & Reset',
+      progress: '{count}/{threshold}',
+      votedWaiting: 'Voted · awaiting {threshold}',
+      executing: 'Resetting...',
+      succeeded: 'Reset Complete',
+      subscriptionsResetCount: '{count} subscription(s) reset',
+      failed: 'Reset Failed',
+      noCredit: 'No reset card available',
+      unknownResult: 'Reset result unknown',
+      subscriptionResetFailed: 'Card used, subscription reset failed',
+      quotaGroupForbidden: 'Quota group cannot vote',
+      subscriptionRequired: 'Subscription members only',
+      expiresIn: 'Ends in {time}',
+      reinitiateIn: 'Next round in {time}',
+      lessThanOneHour: '< 1h',
+      hoursMinutes: '{hours}h {minutes}m',
+      confirmTitle: 'Confirm Triggering Reset Vote',
+      confirmMessage: 'Account "{name}" already has {count}/{threshold} votes. Casting your vote reaches {threshold} votes and will immediately use 1 reset card and clear daily & weekly usage for active subscriptions in its subscription groups. Continue?',
+      confirmButton: 'Vote & Reset',
+      votedToast: 'Vote recorded ({count}/{threshold})',
+      triggeredSuccess: 'Threshold reached: reset card applied and {count} subscription(s) reset',
+      triggeredSuccessWarning: 'Reset completed, but cache refresh needs attention',
+      failedToast: 'Vote recorded, but reset failed: {reason}',
+      requestFailed: 'Failed to submit vote'
+    }
   },
 
   // Onboarding Tour

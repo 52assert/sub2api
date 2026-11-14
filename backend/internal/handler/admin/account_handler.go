@@ -52,6 +52,7 @@ type AccountHandler struct {
 	accountActionSchedules  accountActionScheduleService
 	customCodexReset        *service.CustomCodexResetService
 	claudeResetCredits      claudeResetReader
+	subscriberResetVotes    subscriberResetVoteReader
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService

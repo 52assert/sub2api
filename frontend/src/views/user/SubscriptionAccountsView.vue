@@ -201,6 +201,21 @@
               />
             </template>
 
+            <template #header-reset_vote="{ column }">
+              <div class="flex items-center">
+                <span>{{ column.label }}</span>
+                <HelpTooltip :content="t('userSubscriptions.resetVote.hint')" width-class="w-72" />
+              </div>
+            </template>
+
+            <template #cell-reset_vote="{ row }">
+              <SubscriberResetVoteCell
+                :account="row"
+                :voting="votingAccountIds[row.id] === true"
+                @vote="handleVoteClick"
+              />
+            </template>
+
             <template #cell-last_used_at="{ value }">
               <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatRelativeTime(value) }}</span>
             </template>
@@ -219,6 +234,16 @@
         />
       </template>
     </TablePageLayout>
+
+    <ConfirmDialog
+      :show="showVoteConfirmDialog"
+      :title="t('userSubscriptions.resetVote.confirmTitle')"
+      :message="voteConfirmMessage"
+      :confirm-text="t('userSubscriptions.resetVote.confirmButton')"
+      :cancel-text="t('common.cancel')"
+      @confirm="confirmVoteReset"
+      @cancel="cancelVoteConfirm"
+    />
   </AppLayout>
 </template>
 
@@ -229,8 +254,10 @@ import { useI18n } from 'vue-i18n'
 import subscriptionsAPI, { type SubscriberAccountItem } from '@/api/subscriptions'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 import { useTableLoader } from '@/composables/useTableLoader'
+import { useAppStore } from '@/stores/app'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -241,12 +268,14 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import SubscriberResetVoteCell from '@/components/account/SubscriberResetVoteCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type { Account, AccountUsageInfo, UserSubscription, WindowStats } from '@/types'
 
 const { t } = useI18n()
+const appStore = useAppStore()
 
 const asAccount = (row: SubscriberAccountItem): Account => row as unknown as Account
 
@@ -710,8 +739,117 @@ const allColumns = computed(() => [
   { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false },
   { key: 'groups', label: t('admin.accounts.columns.groups'), sortable: false },
   { key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false },
+  { key: 'reset_vote', label: t('userSubscriptions.resetVote.column'), sortable: false },
   { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true }
 ])
+
+const votingAccountIds = ref<Record<number, boolean>>({})
+const showVoteConfirmDialog = ref(false)
+const pendingVoteAccount = ref<SubscriberAccountItem | null>(null)
+
+const voteConfirmMessage = computed(() => {
+  const acc = pendingVoteAccount.value
+  const vote = acc?.reset_vote
+  return t('userSubscriptions.resetVote.confirmMessage', {
+    name: acc?.name || '',
+    count: vote?.vote_count ?? 2,
+    threshold: vote?.threshold ?? 3
+  })
+})
+
+function resolveVoteFailureReason(state: SubscriberAccountItem['reset_vote']): string {
+  if (!state) return t('userSubscriptions.resetVote.requestFailed')
+  if (state.card_status === 'no_credit' || state.error_code === 'NO_RESET_CARD') {
+    return t('userSubscriptions.resetVote.noCredit')
+  }
+  if (state.card_status === 'unknown' || state.error_code === 'RESET_CARD_UNKNOWN') {
+    return t('userSubscriptions.resetVote.unknownResult')
+  }
+  if (state.card_status === 'succeeded' && state.subscription_reset_status === 'failed') {
+    return t('userSubscriptions.resetVote.subscriptionResetFailed')
+  }
+  return state.error_message || t('userSubscriptions.resetVote.requestFailed')
+}
+
+async function submitVote(account: SubscriberAccountItem) {
+  if (votingAccountIds.value[account.id]) return
+  votingAccountIds.value = { ...votingAccountIds.value, [account.id]: true }
+  try {
+    const result = await subscriptionsAPI.castSubscriberAccountResetVote(account.id)
+    accounts.value = accounts.value.map((item) =>
+      item.id === account.id ? { ...item, reset_vote: result.state } : item
+    )
+
+    if (result.triggered_reset && result.reset_succeeded) {
+      appStore.showSuccess(
+        result.state.warning_code
+          ? t('userSubscriptions.resetVote.triggeredSuccessWarning')
+          : t('userSubscriptions.resetVote.triggeredSuccess', {
+              count: result.state.subscription_reset_count ?? 0
+            })
+      )
+      usageBatchCache.delete(account.id)
+      pendingTodayStatsRefresh.value = true
+      await Promise.all([
+        subscriptionsAPI
+          .getActiveSubscriptions()
+          .then((subs) => {
+            activeSubscriptions.value = subs || []
+          })
+          .catch(() => {}),
+        load()
+      ])
+      usageManualRefreshToken.value += 1
+    } else if (result.triggered_reset && !result.reset_succeeded) {
+      appStore.showError(
+        t('userSubscriptions.resetVote.failedToast', {
+          reason: resolveVoteFailureReason(result.state)
+        })
+      )
+      await load()
+    } else {
+      appStore.showSuccess(
+        t('userSubscriptions.resetVote.votedToast', {
+          count: result.state.vote_count,
+          threshold: result.state.threshold
+        })
+      )
+    }
+  } catch (error: any) {
+    const msg = error?.response?.data?.message || error?.message || t('userSubscriptions.resetVote.requestFailed')
+    appStore.showError(msg)
+    await load()
+  } finally {
+    const next = { ...votingAccountIds.value }
+    delete next[account.id]
+    votingAccountIds.value = next
+  }
+}
+
+const handleVoteClick = (account: SubscriberAccountItem) => {
+  const vote = account.reset_vote
+  if (!vote || !vote.can_vote) return
+  if (vote.status === 'open' && vote.vote_count + 1 >= vote.threshold) {
+    pendingVoteAccount.value = account
+    showVoteConfirmDialog.value = true
+    return
+  }
+  void submitVote(account)
+}
+
+const confirmVoteReset = () => {
+  const account = pendingVoteAccount.value
+  showVoteConfirmDialog.value = false
+  pendingVoteAccount.value = null
+  if (account) {
+    void submitVote(account)
+  }
+}
+
+const cancelVoteConfirm = () => {
+  showVoteConfirmDialog.value = false
+  pendingVoteAccount.value = null
+}
 
 function firstNonBlankString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => (
