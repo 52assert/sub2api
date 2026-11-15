@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"regexp"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ func (r *stubVoteAccountRepo) GetByID(_ context.Context, id int64) (*Account, er
 
 type stubVoteQuotaClient struct {
 	usage        *OpenAIQuotaUsage
+	querySeq     []*OpenAIQuotaUsage
 	queryErr     error
 	targetedRes  *OpenAIQuotaResetResult
 	targetedErr  error
@@ -54,6 +56,13 @@ func (q *stubVoteQuotaClient) QueryUsage(context.Context, int64) (*OpenAIQuotaUs
 	q.queryCalls++
 	if q.queryErr != nil {
 		return nil, q.queryErr
+	}
+	if len(q.querySeq) > 0 {
+		idx := q.queryCalls - 1
+		if idx >= len(q.querySeq) {
+			idx = len(q.querySeq) - 1
+		}
+		return q.querySeq[idx], nil
 	}
 	return q.usage, nil
 }
@@ -688,4 +697,270 @@ func TestCustomSubscriberResetVoteGetAdminDetails(t *testing.T) {
 	require.Equal(t, int64(1), details.NonVoters[0].UserID)
 	require.Equal(t, int64(3), details.NonVoters[1].UserID)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestClassifySubscriberVoteResetResult(t *testing.T) {
+	tests := []struct {
+		name string
+		res  *OpenAIQuotaResetResult
+		want string
+	}{
+		{name: "nil result", res: nil, want: "unknown"},
+		{name: "no_credit", res: &OpenAIQuotaResetResult{Code: "no_credit"}, want: "no_credit"},
+		{name: "NO_CREDITS", res: &OpenAIQuotaResetResult{Code: " NO_CREDITS "}, want: "no_credit"},
+		{name: "ok", res: &OpenAIQuotaResetResult{Code: "ok"}, want: "succeeded"},
+		{name: "success", res: &OpenAIQuotaResetResult{Code: "success"}, want: "succeeded"},
+		{name: "redeemed", res: &OpenAIQuotaResetResult{Code: "redeemed"}, want: "succeeded"},
+		{name: "already_redeemed", res: &OpenAIQuotaResetResult{Code: "already_redeemed"}, want: "succeeded"},
+		{name: "empty code on 2xx", res: &OpenAIQuotaResetResult{Code: ""}, want: "succeeded"},
+		{name: "windows_reset positive", res: &OpenAIQuotaResetResult{Code: "custom_status", WindowsReset: 2}, want: "succeeded"},
+		{
+			name: "credit status redeemed",
+			res:  &OpenAIQuotaResetResult{Code: "custom_status", Credit: &OpenAIQuotaResetCredit{Status: "redeemed"}},
+			want: "succeeded",
+		},
+		{
+			name: "credit redeemed_at present",
+			res:  &OpenAIQuotaResetResult{Code: "custom_status", Credit: &OpenAIQuotaResetCredit{RedeemedAt: "2026-11-15T00:58:10Z"}},
+			want: "succeeded",
+		},
+		{name: "explicit failed", res: &OpenAIQuotaResetResult{Code: "failed"}, want: "failed"},
+		{name: "unknown non-empty code without redemption evidence", res: &OpenAIQuotaResetResult{Code: "unexpected_status"}, want: "unknown"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, classifySubscriberVoteResetResult(tc.res))
+		})
+	}
+}
+
+func TestCustomSubscriberResetVoteConsumeVariantsAndReconciliation(t *testing.T) {
+	now := time.Date(2026, 11, 15, 0, 58, 10, 0, time.UTC)
+
+	expectVoteThreeTransition := func(mock sqlmock.Sqlmock) {
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnRows(sqlmock.NewRows(voteRoundUpdateColumns()).AddRow(
+				int64(30), int64(1), 3, "open", "req-30",
+				now.Add(-time.Hour), now.Add(23*time.Hour), nil, nil,
+				"pending", "pending", 0, "", "", "",
+			))
+		mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO custom_subscriber_reset_vote_voters`)).
+			WithArgs(int64(30), int64(33), now).
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(3)))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM custom_subscriber_reset_vote_voters`)).
+			WithArgs(int64(30)).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+	}
+
+	t.Run("accepts HTTP 2xx consume response with empty code and redeemed credit", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 1},
+				autoResetCandidates: []openAIAutoResetCreditCandidate{
+					{ID: "card-milo", ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+				},
+			},
+			targetedRes: &OpenAIQuotaResetResult{
+				Code: "",
+				Credit: &OpenAIQuotaResetCredit{
+					Status:     "redeemed",
+					RedeemedAt: now.Format(time.RFC3339),
+				},
+			},
+		}
+		recoverer := &stubVoteRecoverer{}
+		applier := &stubVoteResetApplier{resetCount: 4}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, recoverer, applier)
+		svc.now = func() time.Time { return now }
+
+		expectVoteThreeTransition(mock)
+		mock.ExpectExec(regexp.QuoteMeta(`SET card_status = 'succeeded'`)).
+			WithArgs(int64(30), now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), "succeeded", "succeeded", "succeeded", 4, "", "", "", now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		res, err := svc.CastVote(context.Background(), 33, 1)
+		require.NoError(t, err)
+		require.True(t, res.ResetSucceeded)
+		require.Equal(t, SubscriberResetVoteStatusSucceeded, res.State.Status)
+		require.Equal(t, "succeeded", res.State.CardStatus)
+		require.Equal(t, 1, recoverer.calls)
+		require.Equal(t, 1, quota.cachedSnapshots)
+		require.Equal(t, 1, applier.calls)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("accepts HTTP 2xx consume response with code redeemed", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 1},
+			},
+			requestIDRes: &OpenAIQuotaResetResult{Code: "redeemed", WindowsReset: 2},
+		}
+		applier := &stubVoteResetApplier{resetCount: 3}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, &stubVoteRecoverer{}, applier)
+		svc.now = func() time.Time { return now }
+
+		expectVoteThreeTransition(mock)
+		mock.ExpectExec(regexp.QuoteMeta(`SET card_status = 'succeeded'`)).
+			WithArgs(int64(30), now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), "succeeded", "succeeded", "succeeded", 3, "", "", "", now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		res, err := svc.CastVote(context.Background(), 33, 1)
+		require.NoError(t, err)
+		require.True(t, res.ResetSucceeded)
+		require.Equal(t, "succeeded", res.State.CardStatus)
+		require.Equal(t, 1, applier.calls)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("reconciles ambiguous upstream timeout as succeeded when follow-up usage confirms consumption", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			querySeq: []*OpenAIQuotaUsage{
+				{
+					RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 1},
+					RateLimit: &OpenAIRateLimit{
+						SecondaryWindow: &OpenAIRateLimitWindow{UsedPercent: 96},
+					},
+					autoResetCandidates: []openAIAutoResetCreditCandidate{
+						{ID: "card-milo", ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+					},
+				},
+				{
+					RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 0},
+					RateLimit: &OpenAIRateLimit{
+						SecondaryWindow: &OpenAIRateLimitWindow{UsedPercent: 0},
+					},
+				},
+			},
+			targetedErr: infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_RESET_REQUEST_FAILED", "upstream timeout"),
+		}
+		recoverer := &stubVoteRecoverer{}
+		applier := &stubVoteResetApplier{resetCount: 4}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, recoverer, applier)
+		svc.now = func() time.Time { return now }
+
+		expectVoteThreeTransition(mock)
+		mock.ExpectExec(regexp.QuoteMeta(`SET card_status = 'succeeded'`)).
+			WithArgs(int64(30), now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), "succeeded", "succeeded", "succeeded", 4, "", "", "", now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		res, err := svc.CastVote(context.Background(), 33, 1)
+		require.NoError(t, err)
+		require.True(t, res.ResetSucceeded)
+		require.Equal(t, SubscriberResetVoteStatusSucceeded, res.State.Status)
+		require.Equal(t, "succeeded", res.State.CardStatus)
+		require.Equal(t, "succeeded", res.State.SubscriptionResetStatus)
+		require.Equal(t, 2, quota.queryCalls)
+		require.Equal(t, 1, quota.cachedSnapshots)
+		require.Equal(t, 1, applier.calls)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("keeps unknown and refreshes snapshot when follow-up usage shows card still unconsumed", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		unconsumedUsage := &OpenAIQuotaUsage{
+			RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 1},
+			RateLimit: &OpenAIRateLimit{
+				SecondaryWindow: &OpenAIRateLimitWindow{UsedPercent: 96},
+			},
+			autoResetCandidates: []openAIAutoResetCreditCandidate{
+				{ID: "card-milo", ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+			},
+		}
+		quota := &stubVoteQuotaClient{
+			querySeq:    []*OpenAIQuotaUsage{unconsumedUsage, unconsumedUsage},
+			targetedErr: infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_RESET_REQUEST_FAILED", "upstream timeout"),
+		}
+		applier := &stubVoteResetApplier{resetCount: 4}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, &stubVoteRecoverer{}, applier)
+		svc.now = func() time.Time { return now }
+
+		expectVoteThreeTransition(mock)
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), "failed", "unknown", "pending", 0, "RESET_CARD_UNKNOWN", "Reset card outcome is unknown; please verify account quota before retrying", "", now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		res, err := svc.CastVote(context.Background(), 33, 1)
+		require.NoError(t, err)
+		require.False(t, res.ResetSucceeded)
+		require.Equal(t, SubscriberResetVoteStatusFailed, res.State.Status)
+		require.Equal(t, "unknown", res.State.CardStatus)
+		require.Equal(t, "RESET_CARD_UNKNOWN", res.State.ErrorCode)
+		require.Equal(t, 0, applier.calls)
+		require.Equal(t, 2, quota.queryCalls)
+		require.Equal(t, 1, quota.cachedSnapshots)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("no_credit from consume refreshes credit cache to zero", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 1},
+			},
+			requestIDRes: &OpenAIQuotaResetResult{Code: "no_credit"},
+		}
+		applier := &stubVoteResetApplier{resetCount: 4}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, &stubVoteRecoverer{}, applier)
+		svc.now = func() time.Time { return now }
+
+		expectVoteThreeTransition(mock)
+		mock.ExpectExec(regexp.QuoteMeta(`UPDATE custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(30), "failed", "no_credit", "pending", 0, "NO_RESET_CARD", "No reset card is available for this account", "", now).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		res, err := svc.CastVote(context.Background(), 33, 1)
+		require.NoError(t, err)
+		require.False(t, res.ResetSucceeded)
+		require.Equal(t, "no_credit", res.State.CardStatus)
+		require.Equal(t, 1, quota.cacheResetCreditCalls)
+		require.Equal(t, 0, applier.calls)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 }

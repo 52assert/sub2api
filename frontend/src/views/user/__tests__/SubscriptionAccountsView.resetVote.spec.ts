@@ -359,4 +359,107 @@ describe('SubscriptionAccountsView reset voting', () => {
     expect(modal.exists()).toBe(true)
     expect(modal.attributes('data-account-id')).toBe('21')
   })
+
+  it('shows localized failure reason even to non-eligible viewers when round failed', async () => {
+    const accounts: SubscriberAccountItem[] = [
+      {
+        id: 22,
+        name: 'Failed-For-NonMember',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        reset_vote: {
+          supported: true,
+          eligible: false,
+          can_vote: false,
+          has_voted: false,
+          ineligible_reason: 'not_subscribed',
+          status: 'failed',
+          vote_count: 3,
+          threshold: 3,
+          card_status: 'unknown',
+          error_code: 'RESET_CARD_UNKNOWN',
+          error_message: 'Reset card outcome is unknown; please verify account quota before retrying',
+          cooldown_active: true,
+          can_initiate: false
+        }
+      } as SubscriberAccountItem
+    ]
+    listSubscriberAccounts.mockResolvedValue({ items: accounts, total: 1, page: 1, page_size: 20, total_pages: 1 })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const row = wrapper.find('[data-row-id="22"]')
+    expect(row.text()).toContain('userSubscriptions.resetVote.failed')
+    expect(row.text()).toContain('userSubscriptions.resetVote.unknownResult')
+    expect(row.text()).toContain('userSubscriptions.resetVote.subscriptionRequired')
+  })
+
+  it('shows localized failure toast and reloads accounts when triggered 3rd vote returns failed', async () => {
+    const accounts: SubscriberAccountItem[] = [
+      {
+        id: 23,
+        name: 'Failed-On-Third-Vote',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        reset_vote: {
+          supported: true,
+          eligible: true,
+          can_vote: true,
+          has_voted: false,
+          round_id: 70,
+          status: 'open',
+          vote_count: 2,
+          threshold: 3,
+          expires_at: new Date(Date.now() + 3600_000 * 12).toISOString(),
+          cooldown_active: false,
+          can_initiate: false
+        }
+      } as SubscriberAccountItem
+    ]
+    listSubscriberAccounts.mockResolvedValue({ items: accounts, total: 1, page: 1, page_size: 20, total_pages: 1 })
+    castSubscriberAccountResetVote.mockResolvedValue({
+      vote_recorded: true,
+      triggered_reset: true,
+      reset_succeeded: false,
+      state: {
+        supported: true,
+        eligible: true,
+        can_vote: false,
+        has_voted: true,
+        round_id: 70,
+        status: 'failed',
+        vote_count: 3,
+        threshold: 3,
+        card_status: 'unknown',
+        subscription_reset_status: 'pending',
+        error_code: 'RESET_CARD_UNKNOWN',
+        error_message: 'Reset card outcome is unknown; please verify account quota before retrying',
+        cooldown_active: true,
+        can_initiate: false
+      }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-row-id="23"] button').trigger('click')
+    await wrapper.find('[data-testid="confirm-vote-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith(
+      'userSubscriptions.resetVote.failedToast:{"reason":"userSubscriptions.resetVote.unknownResult"}'
+    )
+    expect(listSubscriberAccounts).toHaveBeenCalledTimes(2)
+  })
 })

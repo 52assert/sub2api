@@ -220,6 +220,7 @@ import {
   type ResetVoteParticipant
 } from '@/api/admin/accounts'
 import { formatDateTime } from '@/utils/format'
+import { resolveResetVoteFailureReason } from '@/utils/resetVote'
 
 const props = defineProps<{
   show: boolean
@@ -276,13 +277,15 @@ const statusBadgeClass = computed(() => {
 const roundFailureBanner = computed(() => {
   const d = details.value
   if (!d) return ''
-  if (d.status === 'failed' && d.card_status === 'no_credit') {
-    return d.error_message || t('userSubscriptions.resetVote.noCredit')
+  if (
+    d.status === 'failed' ||
+    d.subscription_reset_status === 'failed' ||
+    Boolean(d.error_code) ||
+    Boolean(d.error_message)
+  ) {
+    return resolveResetVoteFailureReason(d, t)
   }
-  if (d.subscription_reset_status === 'failed') {
-    return d.error_message || t('userSubscriptions.resetVote.subscriptionResetFailed')
-  }
-  return d.error_message || ''
+  return ''
 })
 
 function participantPrimaryName(p: ResetVoteParticipant): string {

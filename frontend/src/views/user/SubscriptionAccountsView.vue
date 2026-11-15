@@ -281,6 +281,7 @@ import SubscriberResetVoteCell from '@/components/account/SubscriberResetVoteCel
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
+import { resolveResetVoteFailureReason } from '@/utils/resetVote'
 import type { Account, AccountUsageInfo, UserSubscription, WindowStats } from '@/types'
 
 const { t } = useI18n()
@@ -647,10 +648,21 @@ if (typeof window !== 'undefined') {
   loadSavedAutoRefresh()
 }
 
+const getVoteRoundSignature = (item: SubscriberAccountItem): string => {
+  const v = item.reset_vote
+  if (!v) return ''
+  return `${v.round_id ?? 0}:${v.status ?? ''}:${v.completed_at ?? ''}`
+}
+
 const refreshAccountsIncrementally = async () => {
   if (autoRefreshFetching.value) return
   autoRefreshFetching.value = true
   try {
+    const prevVoteSignatures = new Map<number, string>()
+    for (const acc of accounts.value) {
+      prevVoteSignatures.set(acc.id, getVoteRoundSignature(acc))
+    }
+
     const result = await subscriptionsAPI.listSubscriberAccounts(
       pagination.page,
       pagination.page_size,
@@ -664,10 +676,22 @@ const refreshAccountsIncrementally = async () => {
         sort_order?: AccountSortOrder
       }
     )
+    const nextItems = result.items || []
+    let shouldRefreshUsage = false
+    for (const item of nextItems) {
+      if (prevVoteSignatures.has(item.id) && prevVoteSignatures.get(item.id) !== getVoteRoundSignature(item)) {
+        usageBatchCache.delete(item.id)
+        shouldRefreshUsage = true
+      }
+    }
+
     pagination.total = result.total || 0
     pagination.pages = result.pages || 0
-    accounts.value = result.items || []
+    accounts.value = nextItems
     await refreshTodayStatsBatch()
+    if (shouldRefreshUsage) {
+      usageManualRefreshToken.value += 1
+    }
   } catch (error) {
     console.error('Subscriber accounts auto refresh failed:', error)
   } finally {
@@ -771,17 +795,7 @@ const voteConfirmMessage = computed(() => {
 })
 
 function resolveVoteFailureReason(state: SubscriberAccountItem['reset_vote']): string {
-  if (!state) return t('userSubscriptions.resetVote.requestFailed')
-  if (state.card_status === 'no_credit' || state.error_code === 'NO_RESET_CARD') {
-    return t('userSubscriptions.resetVote.noCredit')
-  }
-  if (state.card_status === 'unknown' || state.error_code === 'RESET_CARD_UNKNOWN') {
-    return t('userSubscriptions.resetVote.unknownResult')
-  }
-  if (state.card_status === 'succeeded' && state.subscription_reset_status === 'failed') {
-    return t('userSubscriptions.resetVote.subscriptionResetFailed')
-  }
-  return state.error_message || t('userSubscriptions.resetVote.requestFailed')
+  return resolveResetVoteFailureReason(state, t, 'userSubscriptions.resetVote.requestFailed')
 }
 
 async function submitVote(account: SubscriberAccountItem) {
@@ -819,7 +833,9 @@ async function submitVote(account: SubscriberAccountItem) {
           reason: resolveVoteFailureReason(result.state)
         })
       )
+      usageBatchCache.delete(account.id)
       await load()
+      usageManualRefreshToken.value += 1
     } else {
       appStore.showSuccess(
         t('userSubscriptions.resetVote.votedToast', {
