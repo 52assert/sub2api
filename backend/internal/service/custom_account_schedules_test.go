@@ -262,7 +262,7 @@ func TestCustomAccountScheduleExecutionSafety(t *testing.T) {
 		require.Zero(t, q.resetCount)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
-	for _, code := range []string{"ok", "success", "unexpected_secret_code", ""} {
+	for _, code := range []string{"ok", "success", "reset", "unexpected_secret_code", ""} {
 		t.Run("reset result code "+code, func(t *testing.T) {
 			s, mock, v, r := newCustomAccountScheduleTestService(t)
 			expectCustomAccountScheduleGroups(mock, 3)
@@ -273,7 +273,7 @@ func TestCustomAccountScheduleExecutionSafety(t *testing.T) {
 			mock.ExpectExec("UPDATE custom_account_action_schedule_runs SET credit_id").WithArgs(r.ID, "card").WillReturnResult(sqlmock.NewResult(0, 1))
 			s.quota = q
 			result := s.execute(context.Background(), v, r)
-			if code == "ok" || code == "success" {
+			if code == "ok" || code == "success" || code == "reset" {
 				require.Equal(t, "succeeded", result.status)
 				require.Equal(t, 2, result.count)
 			} else {

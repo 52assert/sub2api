@@ -50,7 +50,7 @@
     <!-- Primary eligible action / status -->
     <template v-if="vote.eligible">
       <button
-        v-if="vote.can_vote"
+        v-if="canVoteNow"
         type="button"
         :disabled="voting"
         :class="[
@@ -71,6 +71,17 @@
       >
         {{ t('userSubscriptions.resetVote.votedWaiting', { threshold: vote.threshold }) }}
       </div>
+
+      <span
+        v-else-if="vote.status === 'none'"
+        class="text-xs text-gray-400 dark:text-dark-500"
+      >
+        {{
+          vote.block_reason === 'reset_card_unqueried' && snapshotCredits === null
+            ? t('userSubscriptions.resetVote.queryCreditFirst')
+            : t('userSubscriptions.resetVote.noCredit')
+        }}
+      </span>
 
       <!-- 24h round remaining / cooldown countdown -->
       <div
@@ -116,7 +127,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import type { SubscriberAccountItem } from '@/api/subscriptions'
-import { resolveResetVoteFailureReason } from '@/utils/resetVote'
+import { readAvailableResetCreditsFromExtra, resolveResetVoteFailureReason } from '@/utils/resetVote'
 
 const props = defineProps<{
   account: SubscriberAccountItem
@@ -132,6 +143,25 @@ defineEmits<{
 const { t } = useI18n()
 
 const vote = computed(() => props.account.reset_vote)
+
+const snapshotCredits = computed(() =>
+  readAvailableResetCreditsFromExtra(props.account.extra as Record<string, unknown> | undefined)
+)
+
+const canVoteNow = computed(() => {
+  const v = vote.value
+  if (!v || !v.can_vote) return false
+  if (v.status === 'none') {
+    const extra = props.account.extra as Record<string, unknown> | undefined
+    if (extra && 'codex_reset_credit_snapshot' in extra) {
+      return (snapshotCredits.value ?? 0) > 0
+    }
+    if (typeof v.available_reset_credits === 'number') {
+      return v.available_reset_credits > 0
+    }
+  }
+  return true
+})
 
 const isTriggeringVote = computed(() => {
   if (!vote.value) return false

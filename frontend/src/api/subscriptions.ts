@@ -93,6 +93,8 @@ export interface SubscriberResetVoteState {
   subscription_reset_count?: number
   cooldown_active: boolean
   can_initiate: boolean
+  available_reset_credits?: number
+  block_reason?: 'no_reset_card' | 'reset_card_unqueried' | string
   error_code?: string
   error_message?: string
   warning_code?: string

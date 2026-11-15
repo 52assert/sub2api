@@ -469,6 +469,23 @@ const handleQuery = async () => {
       if (result.cache_persisted) {
         cachedData.value = usageResult
       }
+      const nextCredits = result.rate_limit_reset_credits ?? { available_count: 0, credits: [] }
+      if (
+        result.cache_persisted ||
+        (nextCredits.available_count ?? 0) <= 0 ||
+        (nextCredits.credits?.length ?? 0) > 0
+      ) {
+        emit('account-updated', {
+          ...props.account,
+          extra: {
+            ...(props.account.extra || {}),
+            codex_reset_credit_snapshot: {
+              available_count: nextCredits.available_count ?? 0,
+              credits: nextCredits.credits ?? []
+            }
+          }
+        })
+      }
       return
     }
     const result = await refreshOpenAIQuota(accountID)

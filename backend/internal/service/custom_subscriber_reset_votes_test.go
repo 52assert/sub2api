@@ -127,7 +127,15 @@ func makeVoteTestOpenAIAccount(id int64) *Account {
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 		Status:   StatusActive,
-		Extra:    map[string]any{SubscriberVisibleExtraKey: true},
+		Extra: map[string]any{
+			SubscriberVisibleExtraKey: true,
+			openaiQuotaResetCreditsKey: map[string]any{
+				"available_count": 1,
+				"credits": []map[string]string{
+					{"expires_at": "2026-12-01T00:00:00Z"},
+				},
+			},
+		},
 	}
 }
 
@@ -168,15 +176,47 @@ func TestCustomSubscriberResetVoteGetStates(t *testing.T) {
 	accShadow := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parentID, Extra: map[string]any{SubscriberVisibleExtraKey: true}}
 	accHidden := &Account{ID: 8, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	accSynthetic := &Account{ID: 9, Name: "Synthetic Test", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{SubscriberVisibleExtraKey: true, "synthetic_ui_test": true}}
+	accZeroCard := &Account{
+		ID:       10,
+		Name:     "Zero Card",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			SubscriberVisibleExtraKey:  true,
+			openaiQuotaResetCreditsKey: map[string]any{"available_count": 0},
+		},
+	}
+	accUnqueried := &Account{
+		ID:       11,
+		Name:     "Unqueried Card",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{SubscriberVisibleExtraKey: true},
+	}
+	accExpiredCard := &Account{
+		ID:       12,
+		Name:     "Expired Card Snapshot",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			SubscriberVisibleExtraKey: true,
+			openaiQuotaResetCreditsKey: map[string]any{
+				"available_count": 1,
+				"credits": []map[string]string{
+					{"expires_at": "2026-11-14T11:00:00Z"},
+				},
+			},
+		},
+	}
 
-	// Supported account IDs in order: 1, 2, 3, 4, 5
+	// Supported account IDs in order: 1, 2, 3, 4, 5, 10, 11, 12
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT ag.account_id`)).
 		WithArgs(sqlmock.AnyArg(), SubscriptionTypeSubscription).
-		WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(1).AddRow(3).AddRow(4).AddRow(5))
+		WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(1).AddRow(3).AddRow(4).AddRow(5).AddRow(10).AddRow(11).AddRow(12))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT ag.account_id`)).
 		WithArgs(int64(42), sqlmock.AnyArg(), StatusActive, now, SubscriptionTypeSubscription).
-		WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(1).AddRow(4).AddRow(5))
+		WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(1).AddRow(4).AddRow(5).AddRow(10).AddRow(11).AddRow(12))
 
 	roundRows := sqlmock.NewRows(voteRoundColumns()).
 		AddRow(int64(11), int64(1), 3, "open", "req-11", now.Add(-1*time.Hour), now.Add(23*time.Hour), nil, nil, "pending", "pending", 0, "", "", "", 2, true).
@@ -190,10 +230,10 @@ func TestCustomSubscriberResetVoteGetStates(t *testing.T) {
 
 	states, err := svc.GetStatesForAccounts(context.Background(), 42, []*Account{
 		accOpenAI, accQuotaOnly, accNotSubscribed, accSucceeded, accExpired,
-		accClaude, accShadow, accHidden, accSynthetic,
+		accClaude, accShadow, accHidden, accSynthetic, accZeroCard, accUnqueried, accExpiredCard,
 	})
 	require.NoError(t, err)
-	require.Len(t, states, 9)
+	require.Len(t, states, 12)
 
 	// Open round where user already voted
 	require.True(t, states[1].Supported)
@@ -223,13 +263,36 @@ func TestCustomSubscriberResetVoteGetStates(t *testing.T) {
 	require.False(t, states[4].CanInitiate)
 	require.Equal(t, 5, states[4].SubscriptionResetCount)
 
-	// Expired round after 24h -> ready to initiate a fresh round
+	// Expired round after 24h + valid card -> ready to initiate a fresh round
 	require.Equal(t, SubscriberResetVoteStatusNone, states[5].Status)
 	require.False(t, states[5].CooldownActive)
 	require.True(t, states[5].CanInitiate)
 	require.True(t, states[5].CanVote)
 	require.False(t, states[5].HasVoted)
 	require.Equal(t, 0, states[5].VoteCount)
+	require.NotNil(t, states[5].AvailableResetCredits)
+	require.Equal(t, 1, *states[5].AvailableResetCredits)
+	require.Empty(t, states[5].BlockReason)
+
+	// Zero reset cards -> blocked from initiating
+	require.Equal(t, SubscriberResetVoteStatusNone, states[10].Status)
+	require.True(t, states[10].Eligible)
+	require.False(t, states[10].CanInitiate)
+	require.False(t, states[10].CanVote)
+	require.NotNil(t, states[10].AvailableResetCredits)
+	require.Equal(t, 0, *states[10].AvailableResetCredits)
+	require.Equal(t, SubscriberResetVoteBlockNoResetCard, states[10].BlockReason)
+
+	// Unqueried or expired credit snapshot -> blocked until queried
+	require.False(t, states[11].CanInitiate)
+	require.False(t, states[11].CanVote)
+	require.Nil(t, states[11].AvailableResetCredits)
+	require.Equal(t, SubscriberResetVoteBlockResetCardUnqueried, states[11].BlockReason)
+
+	require.False(t, states[12].CanInitiate)
+	require.False(t, states[12].CanVote)
+	require.Nil(t, states[12].AvailableResetCredits)
+	require.Equal(t, SubscriberResetVoteBlockResetCardUnqueried, states[12].BlockReason)
 
 	// Unsupported account types
 	for _, id := range []int64{6, 7, 8, 9} {
@@ -347,6 +410,14 @@ func TestCustomSubscriberResetVoteInitiateAndReinitiateAfter24h(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
 			WithArgs(int64(1)).
 			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnError(sql.ErrNoRows)
 		mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO custom_subscriber_reset_vote_rounds`)).
 			WithArgs(int64(1), int64(11), 3, "round-uuid-1", now, now.Add(24*time.Hour)).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)))
@@ -388,6 +459,18 @@ func TestCustomSubscriberResetVoteInitiateAndReinitiateAfter24h(t *testing.T) {
 				now.Add(-24*time.Hour), now, now.Add(-23*time.Hour), now.Add(-23*time.Hour),
 				"succeeded", "succeeded", 2, "", "", "",
 			))
+		mock.ExpectRollback()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnRows(sqlmock.NewRows(voteRoundUpdateColumns()).AddRow(
+				int64(99), int64(1), 3, "succeeded", "old-req",
+				now.Add(-24*time.Hour), now, now.Add(-23*time.Hour), now.Add(-23*time.Hour),
+				"succeeded", "succeeded", 2, "", "", "",
+			))
 		mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO custom_subscriber_reset_vote_rounds`)).
 			WithArgs(int64(1), int64(11), 3, "round-uuid-2", now, now.Add(24*time.Hour)).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(102)))
@@ -402,6 +485,136 @@ func TestCustomSubscriberResetVoteInitiateAndReinitiateAfter24h(t *testing.T) {
 		require.False(t, res.TriggeredReset)
 		require.Equal(t, int64(102), res.State.RoundID)
 		require.Equal(t, 1, res.State.VoteCount)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("rejects initiation with NO_RESET_CARD when live quota shows zero reset cards", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{AvailableCount: 0},
+			},
+		}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, nil, nil)
+		svc.now = func() time.Time { return now }
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err = svc.CastVote(context.Background(), 11, 1)
+		require.Error(t, err)
+		require.Equal(t, "NO_RESET_CARD", infraerrors.Reason(err))
+		require.Equal(t, 1, quota.queryCalls)
+		require.Equal(t, 1, quota.cacheResetCreditCalls)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("rejects initiation with NO_RESET_CARD when candidate reset card is expired", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{
+					AvailableCount: 1,
+					Credits: []OpenAIRateLimitResetCreditDetail{
+						{ExpiresAt: now.Add(-time.Minute).Format(time.RFC3339)},
+					},
+				},
+				autoResetCandidates: []openAIAutoResetCreditCandidate{
+					{ID: "expired-card", ExpiresAt: now.Add(-time.Minute).Format(time.RFC3339)},
+				},
+			},
+		}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: makeVoteTestOpenAIAccount(1)},
+		}, quota, nil, nil)
+		svc.now = func() time.Time { return now }
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err = svc.CastVote(context.Background(), 11, 1)
+		require.Error(t, err)
+		require.Equal(t, "NO_RESET_CARD", infraerrors.Reason(err))
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("allows initiation when live quota confirms reset cards even without cached extra snapshot", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		acc := &Account{
+			ID:       1,
+			Name:     "No Cached Snapshot Yet",
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Extra:    map[string]any{SubscriberVisibleExtraKey: true},
+		}
+		quota := &stubVoteQuotaClient{
+			usage: &OpenAIQuotaUsage{
+				RateLimitResetCredits: &OpenAIRateLimitResetCredits{
+					AvailableCount: 1,
+					Credits: []OpenAIRateLimitResetCreditDetail{
+						{ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+					},
+				},
+				autoResetCandidates: []openAIAutoResetCreditCandidate{
+					{ID: "live-card", ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
+				},
+			},
+		}
+		svc := newCustomSubscriberResetVoteServiceWithDeps(db, &stubVoteAccountRepo{
+			byID: map[int64]*Account{1: acc},
+		}, quota, nil, nil)
+		svc.now = func() time.Time { return now }
+		svc.newUUID = func() string { return "round-uuid-3" }
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(`SELECT pg_advisory_xact_lock`)).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (`)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, account_id, threshold, status`)).
+			WithArgs(int64(1)).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO custom_subscriber_reset_vote_rounds`)).
+			WithArgs(int64(1), int64(11), 3, "round-uuid-3", now, now.Add(24*time.Hour)).
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(103)))
+		mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO custom_subscriber_reset_vote_voters`)).
+			WithArgs(int64(103), int64(11), now).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+
+		res, err := svc.CastVote(context.Background(), 11, 1)
+		require.NoError(t, err)
+		require.True(t, res.VoteRecorded)
+		require.Equal(t, 1, quota.queryCalls)
+		require.Equal(t, 1, quota.cacheResetCreditCalls)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }
@@ -708,6 +921,7 @@ func TestClassifySubscriberVoteResetResult(t *testing.T) {
 		{name: "nil result", res: nil, want: "unknown"},
 		{name: "no_credit", res: &OpenAIQuotaResetResult{Code: "no_credit"}, want: "no_credit"},
 		{name: "NO_CREDITS", res: &OpenAIQuotaResetResult{Code: " NO_CREDITS "}, want: "no_credit"},
+		{name: "reset code with zero windows_reset", res: &OpenAIQuotaResetResult{Code: "reset", WindowsReset: 0}, want: "succeeded"},
 		{name: "ok", res: &OpenAIQuotaResetResult{Code: "ok"}, want: "succeeded"},
 		{name: "success", res: &OpenAIQuotaResetResult{Code: "success"}, want: "succeeded"},
 		{name: "redeemed", res: &OpenAIQuotaResetResult{Code: "redeemed"}, want: "succeeded"},

@@ -63,7 +63,7 @@ function mountView() {
         DataTable: {
           props: ['data', 'columns', 'loading'],
           template:
-            '<div><div v-for="row in data" :key="row.id" :data-row-id="row.id"><slot name="cell-reset_vote" :row="row" /></div></div>'
+            '<div><div v-for="row in data" :key="row.id" :data-row-id="row.id"><slot name="cell-usage" :row="row" /><slot name="cell-reset_vote" :row="row" /></div></div>'
         },
         ConfirmDialog: {
           props: ['show', 'title', 'message', 'confirmText', 'cancelText'],
@@ -82,7 +82,11 @@ function mountView() {
         SearchInput: true,
         Select: true,
         AccountStatusIndicator: true,
-        AccountUsageCell: true,
+        AccountUsageCell: {
+          props: ['account'],
+          emits: ['account-updated'],
+          template: `<div data-testid="usage-cell-stub"><span data-testid="emit-credit-one" @click="$emit('account-updated', { ...account, extra: { ...(account.extra || {}), codex_reset_credit_snapshot: { available_count: 1, credits: [{ expires_at: '2099-01-01T00:00:00Z' }] } } })" /><span data-testid="emit-credit-zero" @click="$emit('account-updated', { ...account, extra: { ...(account.extra || {}), codex_reset_credit_snapshot: { available_count: 0, credits: [] } } })" /></div>`
+        },
         AccountTodayStatsCell: true,
         AccountGroupsCell: true,
         AccountCapacityCell: true,
@@ -460,6 +464,124 @@ describe('SubscriptionAccountsView reset voting', () => {
     expect(showError).toHaveBeenCalledWith(
       'userSubscriptions.resetVote.failedToast:{"reason":"userSubscriptions.resetVote.unknownResult"}'
     )
+    expect(listSubscriberAccounts).toHaveBeenCalledTimes(2)
+  })
+
+  it('requires reset card > 0 to initiate and updates initiate button live after credit refresh', async () => {
+    const accounts: SubscriberAccountItem[] = [
+      {
+        id: 30,
+        name: 'Zero-Card-Account',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        extra: { codex_reset_credit_snapshot: { available_count: 0, credits: [] } },
+        reset_vote: {
+          supported: true,
+          eligible: true,
+          can_vote: false,
+          has_voted: false,
+          status: 'none',
+          vote_count: 0,
+          threshold: 3,
+          cooldown_active: false,
+          can_initiate: false,
+          available_reset_credits: 0,
+          block_reason: 'no_reset_card'
+        }
+      } as SubscriberAccountItem,
+      {
+        id: 31,
+        name: 'Unqueried-Card-Account',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        reset_vote: {
+          supported: true,
+          eligible: true,
+          can_vote: false,
+          has_voted: false,
+          status: 'none',
+          vote_count: 0,
+          threshold: 3,
+          cooldown_active: false,
+          can_initiate: false,
+          block_reason: 'reset_card_unqueried'
+        }
+      } as SubscriberAccountItem
+    ]
+    listSubscriberAccounts.mockResolvedValue({ items: accounts, total: 2, page: 1, page_size: 20, total_pages: 1 })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const row30 = wrapper.find('[data-row-id="30"]')
+    expect(row30.find('button').exists()).toBe(false)
+    expect(row30.text()).toContain('userSubscriptions.resetVote.noCredit')
+
+    const row31 = wrapper.find('[data-row-id="31"]')
+    expect(row31.find('button').exists()).toBe(false)
+    expect(row31.text()).toContain('userSubscriptions.resetVote.queryCreditFirst')
+
+    await row31.find('[data-testid="emit-credit-one"]').trigger('click')
+    await flushPromises()
+    expect(row31.find('button').exists()).toBe(true)
+    expect(row31.find('button').text()).toContain('userSubscriptions.resetVote.initiate')
+
+    await row31.find('[data-testid="emit-credit-zero"]').trigger('click')
+    await flushPromises()
+    expect(row31.find('button').exists()).toBe(false)
+    expect(row31.text()).toContain('userSubscriptions.resetVote.noCredit')
+  })
+
+  it('shows localized noCredit error toast when vote API rejects with NO_RESET_CARD', async () => {
+    const accounts: SubscriberAccountItem[] = [
+      {
+        id: 32,
+        name: 'Stale-Card-Account',
+        platform: 'openai',
+        type: 'oauth',
+        status: 'active',
+        schedulable: true,
+        concurrency: 2,
+        current_concurrency: 0,
+        priority: 1,
+        reset_vote: {
+          supported: true,
+          eligible: true,
+          can_vote: true,
+          has_voted: false,
+          status: 'none',
+          vote_count: 0,
+          threshold: 3,
+          cooldown_active: false,
+          can_initiate: true,
+          available_reset_credits: 1
+        }
+      } as SubscriberAccountItem
+    ]
+    listSubscriberAccounts.mockResolvedValue({ items: accounts, total: 1, page: 1, page_size: 20, total_pages: 1 })
+    castSubscriberAccountResetVote.mockRejectedValue({
+      status: 409,
+      reason: 'NO_RESET_CARD',
+      message: 'No reset card is available for this account'
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-row-id="32"] button').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith('userSubscriptions.resetVote.noCredit')
     expect(listSubscriberAccounts).toHaveBeenCalledTimes(2)
   })
 })

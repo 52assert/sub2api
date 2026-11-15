@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -35,6 +37,9 @@ const (
 	SubscriberResetVoteIneligibleQuotaGroupOnly = "quota_group_only"
 	SubscriberResetVoteIneligibleNotSubscribed  = "not_subscribed"
 	SubscriberResetVoteIneligibleUnsupported    = "unsupported_account"
+
+	SubscriberResetVoteBlockNoResetCard        = "no_reset_card"
+	SubscriberResetVoteBlockResetCardUnqueried = "reset_card_unqueried"
 )
 
 type subscriberVoteQuotaClient interface {
@@ -69,6 +74,8 @@ type SubscriberResetVoteState struct {
 	SubscriptionResetCount  int        `json:"subscription_reset_count,omitempty"`
 	CooldownActive          bool       `json:"cooldown_active"`
 	CanInitiate             bool       `json:"can_initiate"`
+	AvailableResetCredits   *int       `json:"available_reset_credits,omitempty"`
+	BlockReason             string     `json:"block_reason,omitempty"`
 	ErrorCode               string     `json:"error_code,omitempty"`
 	ErrorMessage            string     `json:"error_message,omitempty"`
 	WarningCode             string     `json:"warning_code,omitempty"`
@@ -180,6 +187,7 @@ type CustomSubscriberResetVoteService struct {
 	creditRefreshMu    sync.Mutex
 	creditRefreshCache map[int64]cachedSubscriberResetCredits
 	creditRefreshGroup singleflight.Group
+	initCheckGroup     singleflight.Group
 }
 
 // ProvideCustomSubscriberResetVoteService wires the subscriber reset vote service for dependency injection.
@@ -260,6 +268,7 @@ func (s *CustomSubscriberResetVoteService) GetStatesForAccounts(
 	}
 
 	supportedIDs := make([]int64, 0, len(accounts))
+	accByID := make(map[int64]*Account, len(accounts))
 	seen := make(map[int64]struct{}, len(accounts))
 	for _, acc := range accounts {
 		if acc == nil || acc.ID <= 0 {
@@ -274,6 +283,7 @@ func (s *CustomSubscriberResetVoteService) GetStatesForAccounts(
 			continue
 		}
 		supportedIDs = append(supportedIDs, acc.ID)
+		accByID[acc.ID] = acc
 	}
 	if len(supportedIDs) == 0 {
 		return out, nil
@@ -314,7 +324,8 @@ func (s *CustomSubscriberResetVoteService) GetStatesForAccounts(
 				ineligibleReason = SubscriberResetVoteIneligibleNotSubscribed
 			}
 		}
-		out[accID] = s.projectVoteRoundState(eligible, ineligibleReason, roundsByAccount[accID], now)
+		creditCount, creditKnown := s.resolveAccountResetCredits(accByID[accID], now)
+		out[accID] = s.projectVoteRoundState(eligible, ineligibleReason, creditCount, creditKnown, roundsByAccount[accID], now)
 	}
 	return out, nil
 }
@@ -338,15 +349,25 @@ func (s *CustomSubscriberResetVoteService) CastVote(
 	}
 
 	now := s.now().UTC()
-	round, voteCount, triggered, err := s.recordVotePhase(ctx, userID, accountID, acc, now)
+	round, voteCount, triggered, needsInitiation, err := s.tryJoinActiveRoundOrCheckInitiation(ctx, userID, accountID, acc, now)
 	if err != nil {
 		return nil, err
+	}
+	if needsInitiation {
+		if err := s.verifyInitiationResetCredits(ctx, acc, now); err != nil {
+			return nil, err
+		}
+		now = s.now().UTC()
+		round, voteCount, triggered, err = s.recordVotePhase(ctx, userID, accountID, acc, now)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if !triggered {
 		round.VoteCount = voteCount
 		round.HasVoted = true
-		state := s.projectVoteRoundState(true, "", round, now)
+		state := s.projectVoteRoundState(true, "", 0, false, round, now)
 		return &SubscriberResetVoteCastResult{
 			State:          state,
 			VoteRecorded:   true,
@@ -361,7 +382,7 @@ func (s *CustomSubscriberResetVoteService) CastVote(
 	round = s.executeTriggeredRound(execCtx, round, userID)
 	round.VoteCount = voteCount
 	round.HasVoted = true
-	state := s.projectVoteRoundState(true, "", round, s.now().UTC())
+	state := s.projectVoteRoundState(true, "", 0, false, round, s.now().UTC())
 	return &SubscriberResetVoteCastResult{
 		State:          state,
 		VoteRecorded:   true,
@@ -370,139 +391,215 @@ func (s *CustomSubscriberResetVoteService) CastVote(
 	}, nil
 }
 
+func (s *CustomSubscriberResetVoteService) beginLockedVoteTx(
+	ctx context.Context,
+	userID, accountID int64,
+	acc *Account,
+	now time.Time,
+) (*sql.Tx, *subscriberResetVoteRoundRow, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rollbackErr := func(e error) (*sql.Tx, *subscriberResetVoteRoundRow, error) {
+		_ = tx.Rollback()
+		return nil, nil, e
+	}
+
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('custom-subscriber-reset-vote:' || $1::text, 0))`, accountID); err != nil {
+		return rollbackErr(err)
+	}
+
+	eligible, err := s.isUserEligibleInTx(ctx, tx, userID, accountID, now)
+	if err != nil {
+		return rollbackErr(err)
+	}
+	if !eligible {
+		return rollbackErr(infraerrors.Forbidden("RESET_VOTE_SUBSCRIPTION_REQUIRED", "Only active members of this account's subscription groups can vote to reset"))
+	}
+	if !isVoteSupportedOpenAIAccount(acc) {
+		return rollbackErr(infraerrors.BadRequest("RESET_VOTE_UNSUPPORTED_ACCOUNT", "Only OpenAI OAuth parent accounts support reset voting"))
+	}
+
+	latest, err := s.loadLatestRoundForUpdate(ctx, tx, accountID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return rollbackErr(err)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx, nil, nil
+	}
+	return tx, latest, nil
+}
+
+func (s *CustomSubscriberResetVoteService) castExistingRoundInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	round *subscriberResetVoteRoundRow,
+	now time.Time,
+) (int, bool, error) {
+	if round.Status == SubscriberResetVoteStatusExecuting &&
+		round.TriggeredAt != nil &&
+		now.Sub(*round.TriggeredAt) > subscriberVoteStaleExecutingTimeout &&
+		round.CardStatus == "pending" {
+		errCode := "VOTE_EXECUTION_TIMED_OUT"
+		errMsg := "Previous reset attempt timed out before upstream confirmation"
+		if _, updErr := tx.ExecContext(
+			ctx,
+			`UPDATE custom_subscriber_reset_vote_rounds
+			 SET status = 'failed', card_status = 'unknown', error_code = $2, error_message = $3, completed_at = $4, updated_at = $4
+			 WHERE id = $1 AND status = 'executing'`,
+			round.ID, errCode, errMsg, now,
+		); updErr != nil {
+			return 0, false, updErr
+		}
+		round.Status = SubscriberResetVoteStatusFailed
+		round.CardStatus = "unknown"
+		round.ErrorCode = errCode
+		round.ErrorMessage = errMsg
+		round.CompletedAt = &now
+	}
+
+	switch round.Status {
+	case SubscriberResetVoteStatusExecuting:
+		return 0, false, infraerrors.Conflict("RESET_VOTE_EXECUTING", "Reset card execution is currently in progress")
+	case SubscriberResetVoteStatusSucceeded, SubscriberResetVoteStatusFailed:
+		return 0, false, infraerrors.Conflict("RESET_VOTE_COOLDOWN_ACTIVE", "A reset vote round already completed within the last 24 hours; please wait until the 24-hour window expires")
+	case SubscriberResetVoteStatusOpen:
+		var voterID int64
+		err := tx.QueryRowContext(
+			ctx,
+			`INSERT INTO custom_subscriber_reset_vote_voters (round_id, user_id, created_at)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (round_id, user_id) DO NOTHING
+			 RETURNING id`,
+			round.ID, userID, now,
+		).Scan(&voterID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, infraerrors.Conflict("RESET_VOTE_ALREADY_VOTED", "You have already voted in this 24-hour reset round")
+		}
+		if err != nil {
+			return 0, false, err
+		}
+
+		var voteCount int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM custom_subscriber_reset_vote_voters WHERE round_id = $1`, round.ID).Scan(&voteCount); err != nil {
+			return 0, false, err
+		}
+		triggered := false
+		if voteCount >= round.Threshold {
+			if _, err = tx.ExecContext(
+				ctx,
+				`UPDATE custom_subscriber_reset_vote_rounds
+				 SET status = 'executing', triggered_at = $2, updated_at = $2
+				 WHERE id = $1 AND status = 'open'`,
+				round.ID, now,
+			); err != nil {
+				return 0, false, err
+			}
+			round.Status = SubscriberResetVoteStatusExecuting
+			round.TriggeredAt = &now
+			triggered = true
+		}
+		return voteCount, triggered, nil
+	default:
+		return 0, false, infraerrors.InternalServer("RESET_VOTE_INVALID_STATE", "Invalid vote round state")
+	}
+}
+
+func (s *CustomSubscriberResetVoteService) initiateNewRoundInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID, accountID int64,
+	now time.Time,
+) (*subscriberResetVoteRoundRow, error) {
+	requestID := s.newUUID()
+	expiresAt := now.Add(SubscriberResetVoteWindow)
+	round := &subscriberResetVoteRoundRow{
+		AccountID:               accountID,
+		Threshold:               SubscriberResetVoteThreshold,
+		Status:                  SubscriberResetVoteStatusOpen,
+		RequestID:               requestID,
+		InitiatedAt:             now,
+		ExpiresAt:               expiresAt,
+		CardStatus:              "pending",
+		SubscriptionResetStatus: "pending",
+	}
+	err := tx.QueryRowContext(
+		ctx,
+		`INSERT INTO custom_subscriber_reset_vote_rounds
+		 (account_id, initiator_user_id, threshold, status, request_id, initiated_at, expires_at, card_status, subscription_reset_status, created_at, updated_at)
+		 VALUES ($1, $2, $3, 'open', $4, $5, $6, 'pending', 'pending', $5, $5)
+		 RETURNING id`,
+		accountID, userID, SubscriberResetVoteThreshold, requestID, now, expiresAt,
+	).Scan(&round.ID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(
+		ctx,
+		`INSERT INTO custom_subscriber_reset_vote_voters (round_id, user_id, created_at) VALUES ($1, $2, $3)`,
+		round.ID, userID, now,
+	); err != nil {
+		return nil, err
+	}
+	return round, nil
+}
+
+func (s *CustomSubscriberResetVoteService) tryJoinActiveRoundOrCheckInitiation(
+	ctx context.Context,
+	userID, accountID int64,
+	acc *Account,
+	now time.Time,
+) (*subscriberResetVoteRoundRow, int, bool, bool, error) {
+	tx, latest, err := s.beginLockedVoteTx(ctx, userID, accountID, acc, now)
+	if err != nil {
+		return nil, 0, false, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if latest == nil || !latest.ExpiresAt.After(now) {
+		return nil, 0, false, true, nil
+	}
+
+	voteCount, triggered, err := s.castExistingRoundInTx(ctx, tx, userID, latest, now)
+	if err != nil {
+		return nil, 0, false, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, 0, false, false, err
+	}
+	return latest, voteCount, triggered, false, nil
+}
+
 func (s *CustomSubscriberResetVoteService) recordVotePhase(
 	ctx context.Context,
 	userID, accountID int64,
 	acc *Account,
 	now time.Time,
 ) (*subscriberResetVoteRoundRow, int, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, latest, err := s.beginLockedVoteTx(ctx, userID, accountID, acc, now)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('custom-subscriber-reset-vote:' || $1::text, 0))`, accountID); err != nil {
-		return nil, 0, false, err
-	}
-
-	eligible, err := s.isUserEligibleInTx(ctx, tx, userID, accountID, now)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if !eligible {
-		return nil, 0, false, infraerrors.Forbidden("RESET_VOTE_SUBSCRIPTION_REQUIRED", "Only active members of this account's subscription groups can vote to reset")
-	}
-	if !isVoteSupportedOpenAIAccount(acc) {
-		return nil, 0, false, infraerrors.BadRequest("RESET_VOTE_UNSUPPORTED_ACCOUNT", "Only OpenAI OAuth parent accounts support reset voting")
-	}
-
-	latest, err := s.loadLatestRoundForUpdate(ctx, tx, accountID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, 0, false, err
-	}
-
 	var round *subscriberResetVoteRoundRow
 	var voteCount int
 	triggered := false
 
-	if errors.Is(err, sql.ErrNoRows) || !latest.ExpiresAt.After(now) {
-		requestID := s.newUUID()
-		expiresAt := now.Add(SubscriberResetVoteWindow)
-		round = &subscriberResetVoteRoundRow{
-			AccountID:               accountID,
-			Threshold:               SubscriberResetVoteThreshold,
-			Status:                  SubscriberResetVoteStatusOpen,
-			RequestID:               requestID,
-			InitiatedAt:             now,
-			ExpiresAt:               expiresAt,
-			CardStatus:              "pending",
-			SubscriptionResetStatus: "pending",
-		}
-		err = tx.QueryRowContext(
-			ctx,
-			`INSERT INTO custom_subscriber_reset_vote_rounds
-			 (account_id, initiator_user_id, threshold, status, request_id, initiated_at, expires_at, card_status, subscription_reset_status, created_at, updated_at)
-			 VALUES ($1, $2, $3, 'open', $4, $5, $6, 'pending', 'pending', $5, $5)
-			 RETURNING id`,
-			accountID, userID, SubscriberResetVoteThreshold, requestID, now, expiresAt,
-		).Scan(&round.ID)
+	if latest == nil || !latest.ExpiresAt.After(now) {
+		round, err = s.initiateNewRoundInTx(ctx, tx, userID, accountID, now)
 		if err != nil {
-			return nil, 0, false, err
-		}
-		if _, err = tx.ExecContext(
-			ctx,
-			`INSERT INTO custom_subscriber_reset_vote_voters (round_id, user_id, created_at) VALUES ($1, $2, $3)`,
-			round.ID, userID, now,
-		); err != nil {
 			return nil, 0, false, err
 		}
 		voteCount = 1
 	} else {
 		round = latest
-		if round.Status == SubscriberResetVoteStatusExecuting &&
-			round.TriggeredAt != nil &&
-			now.Sub(*round.TriggeredAt) > subscriberVoteStaleExecutingTimeout &&
-			round.CardStatus == "pending" {
-			errCode := "VOTE_EXECUTION_TIMED_OUT"
-			errMsg := "Previous reset attempt timed out before upstream confirmation"
-			if _, updErr := tx.ExecContext(
-				ctx,
-				`UPDATE custom_subscriber_reset_vote_rounds
-				 SET status = 'failed', card_status = 'unknown', error_code = $2, error_message = $3, completed_at = $4, updated_at = $4
-				 WHERE id = $1 AND status = 'executing'`,
-				round.ID, errCode, errMsg, now,
-			); updErr != nil {
-				return nil, 0, false, updErr
-			}
-			round.Status = SubscriberResetVoteStatusFailed
-			round.CardStatus = "unknown"
-			round.ErrorCode = errCode
-			round.ErrorMessage = errMsg
-			round.CompletedAt = &now
-		}
-
-		switch round.Status {
-		case SubscriberResetVoteStatusExecuting:
-			return nil, 0, false, infraerrors.Conflict("RESET_VOTE_EXECUTING", "Reset card execution is currently in progress")
-		case SubscriberResetVoteStatusSucceeded, SubscriberResetVoteStatusFailed:
-			return nil, 0, false, infraerrors.Conflict("RESET_VOTE_COOLDOWN_ACTIVE", "A reset vote round already completed within the last 24 hours; please wait until the 24-hour window expires")
-		case SubscriberResetVoteStatusOpen:
-			var voterID int64
-			err = tx.QueryRowContext(
-				ctx,
-				`INSERT INTO custom_subscriber_reset_vote_voters (round_id, user_id, created_at)
-				 VALUES ($1, $2, $3)
-				 ON CONFLICT (round_id, user_id) DO NOTHING
-				 RETURNING id`,
-				round.ID, userID, now,
-			).Scan(&voterID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, 0, false, infraerrors.Conflict("RESET_VOTE_ALREADY_VOTED", "You have already voted in this 24-hour reset round")
-			}
-			if err != nil {
-				return nil, 0, false, err
-			}
-
-			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM custom_subscriber_reset_vote_voters WHERE round_id = $1`, round.ID).Scan(&voteCount); err != nil {
-				return nil, 0, false, err
-			}
-			if voteCount >= round.Threshold {
-				if _, err = tx.ExecContext(
-					ctx,
-					`UPDATE custom_subscriber_reset_vote_rounds
-					 SET status = 'executing', triggered_at = $2, updated_at = $2
-					 WHERE id = $1 AND status = 'open'`,
-					round.ID, now,
-				); err != nil {
-					return nil, 0, false, err
-				}
-				round.Status = SubscriberResetVoteStatusExecuting
-				round.TriggeredAt = &now
-				triggered = true
-			}
-		default:
-			return nil, 0, false, infraerrors.InternalServer("RESET_VOTE_INVALID_STATE", "Invalid vote round state")
+		voteCount, triggered, err = s.castExistingRoundInTx(ctx, tx, userID, round, now)
+		if err != nil {
+			return nil, 0, false, err
 		}
 	}
 
@@ -510,6 +607,69 @@ func (s *CustomSubscriberResetVoteService) recordVotePhase(
 		return nil, 0, false, err
 	}
 	return round, voteCount, triggered, nil
+}
+
+func (s *CustomSubscriberResetVoteService) verifyInitiationResetCredits(
+	ctx context.Context,
+	acc *Account,
+	now time.Time,
+) error {
+	if acc == nil || acc.ID <= 0 {
+		return infraerrors.Conflict("NO_RESET_CARD", "No reset card is available for this account")
+	}
+	if s.quota == nil {
+		creditCount, creditKnown := s.resolveAccountResetCredits(acc, now)
+		if !creditKnown || creditCount <= 0 {
+			return infraerrors.Conflict("NO_RESET_CARD", "No reset card is available for this account")
+		}
+		return nil
+	}
+
+	key := fmt.Sprintf("%d", acc.ID)
+	_, err, _ := s.initCheckGroup.Do(key, func() (any, error) {
+		queryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriberResetCreditRefreshTimeout)
+		defer cancel()
+
+		usage, queryErr := s.quota.QueryUsage(queryCtx, acc.ID)
+		if queryErr != nil {
+			return nil, infraerrors.New(http.StatusBadGateway, "QUOTA_QUERY_FAILED", "Failed to check available reset cards")
+		}
+		if usage != nil && usage.RateLimitResetCredits != nil {
+			s.cacheObservedResetCredits(queryCtx, acc.ID, usage.RateLimitResetCredits)
+			fetchedAt := usage.FetchedAt
+			if fetchedAt <= 0 {
+				fetchedAt = s.now().Unix()
+			}
+			sanitizedCredits := sanitizeOpenAIRateLimitResetCredits(usage.RateLimitResetCredits)
+			s.creditRefreshMu.Lock()
+			if s.creditRefreshCache == nil {
+				s.creditRefreshCache = make(map[int64]cachedSubscriberResetCredits)
+			}
+			s.creditRefreshCache[acc.ID] = cachedSubscriberResetCredits{
+				cachedAt: s.now().UTC(),
+				result: SubscriberAccountResetCreditsResult{
+					RateLimitResetCredits: sanitizedCredits,
+					FetchedAt:             fetchedAt,
+					CachePersisted:        true,
+				},
+			}
+			s.creditRefreshMu.Unlock()
+		}
+		if usage == nil || usage.RateLimitResetCredits == nil || usage.RateLimitResetCredits.AvailableCount <= 0 {
+			return nil, infraerrors.Conflict("NO_RESET_CARD", "No reset card is available for this account")
+		}
+		if len(usage.autoResetCandidates) > 0 {
+			if _, cardErr := selectCustomAccountScheduleCard(usage, s.now().UTC()); cardErr != nil {
+				return nil, infraerrors.Conflict("NO_RESET_CARD", cardErr.Error())
+			}
+		} else if len(usage.RateLimitResetCredits.Credits) > 0 {
+			if cnt, _ := evaluateResetCreditsCount(usage.RateLimitResetCredits, s.now().UTC(), true); cnt <= 0 {
+				return nil, infraerrors.Conflict("NO_RESET_CARD", "No unexpired reset card is available")
+			}
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
@@ -664,7 +824,7 @@ func classifySubscriberVoteResetResult(res *OpenAIQuotaResetResult) string {
 	}
 
 	switch code {
-	case "ok", "success", "succeeded", "redeemed", "credit_redeemed", "already_redeemed", "consumed", "completed", "done", "":
+	case "reset", "ok", "success", "succeeded", "redeemed", "credit_redeemed", "already_redeemed", "consumed", "completed", "done", "":
 		return "succeeded"
 	case "failed", "failure", "error", "invalid", "invalid_request", "rejected", "denied", "rate_limited":
 		return "failed"
@@ -1020,24 +1180,190 @@ func (s *CustomSubscriberResetVoteService) persistRoundOutcome(ctx context.Conte
 	return err
 }
 
+func parseResetCreditExpiry(raw string) (expiresAt time.Time, hasExpiry, unparseable bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+		return t, true, false
+	}
+	if t, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return t, true, false
+	}
+	// Preserve unparseable non-empty strings to stay consistent with OpenAIQuotaResetCell.vue.
+	return time.Time{}, true, true
+}
+
+func evaluateResetCreditsCount(credits *OpenAIRateLimitResetCredits, now time.Time, allowEmptyDetails bool) (int, bool) {
+	if credits == nil {
+		return 0, false
+	}
+	if credits.AvailableCount <= 0 {
+		return 0, true
+	}
+	if len(credits.Credits) == 0 {
+		if allowEmptyDetails {
+			return credits.AvailableCount, true
+		}
+		return 0, false
+	}
+	unexpiredCount := 0
+	for _, item := range credits.Credits {
+		exp, hasExpiry, unparseable := parseResetCreditExpiry(item.ExpiresAt)
+		if !hasExpiry {
+			continue
+		}
+		if !unparseable && !exp.After(now) {
+			continue
+		}
+		unexpiredCount++
+	}
+	effective := min(credits.AvailableCount, unexpiredCount)
+	if effective <= 0 {
+		return 0, false
+	}
+	return effective, true
+}
+
+func parseResetCreditInt(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, false
+		}
+		return int(v), true
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(parsed), true
+	default:
+		return 0, false
+	}
+}
+
+func extractSnapshotResetCredits(raw any) *OpenAIRateLimitResetCredits {
+	switch typed := raw.(type) {
+	case *OpenAIRateLimitResetCredits:
+		return typed
+	case OpenAIRateLimitResetCredits:
+		copyVal := typed
+		return &copyVal
+	case map[string]any:
+		if typed == nil {
+			return nil
+		}
+		rawCount, ok := parseResetCreditInt(typed["available_count"])
+		if !ok {
+			return nil
+		}
+		out := &OpenAIRateLimitResetCredits{AvailableCount: rawCount}
+		switch rawCredits := typed["credits"].(type) {
+		case []OpenAIRateLimitResetCreditDetail:
+			out.Credits = append([]OpenAIRateLimitResetCreditDetail(nil), rawCredits...)
+		case []map[string]string:
+			for _, item := range rawCredits {
+				if exp := strings.TrimSpace(item["expires_at"]); exp != "" {
+					out.Credits = append(out.Credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: exp})
+				}
+			}
+		case []map[string]any:
+			for _, item := range rawCredits {
+				if exp, ok := item["expires_at"].(string); ok && strings.TrimSpace(exp) != "" {
+					out.Credits = append(out.Credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: strings.TrimSpace(exp)})
+				}
+			}
+		case []any:
+			for _, entry := range rawCredits {
+				switch item := entry.(type) {
+				case OpenAIRateLimitResetCreditDetail:
+					if strings.TrimSpace(item.ExpiresAt) != "" {
+						out.Credits = append(out.Credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: strings.TrimSpace(item.ExpiresAt)})
+					}
+				case map[string]string:
+					if exp := strings.TrimSpace(item["expires_at"]); exp != "" {
+						out.Credits = append(out.Credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: exp})
+					}
+				case map[string]any:
+					if exp, ok := item["expires_at"].(string); ok && strings.TrimSpace(exp) != "" {
+						out.Credits = append(out.Credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: strings.TrimSpace(exp)})
+					}
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func (s *CustomSubscriberResetVoteService) resolveAccountResetCredits(acc *Account, now time.Time) (int, bool) {
+	if acc == nil {
+		return 0, false
+	}
+	if s != nil {
+		s.creditRefreshMu.Lock()
+		var cached *cachedSubscriberResetCredits
+		if s.creditRefreshCache != nil {
+			if entry, ok := s.creditRefreshCache[acc.ID]; ok && now.Sub(entry.cachedAt) < subscriberResetCreditRefreshCooldown && entry.result.RateLimitResetCredits != nil {
+				entryCopy := entry
+				cached = &entryCopy
+			}
+		}
+		s.creditRefreshMu.Unlock()
+		if cached != nil {
+			return evaluateResetCreditsCount(cached.result.RateLimitResetCredits, now, true)
+		}
+	}
+	if len(acc.Extra) == 0 {
+		return 0, false
+	}
+	snapshot := extractSnapshotResetCredits(acc.Extra[openaiQuotaResetCreditsKey])
+	return evaluateResetCreditsCount(snapshot, now, false)
+}
+
 func (s *CustomSubscriberResetVoteService) projectVoteRoundState(
 	eligible bool,
 	ineligibleReason string,
+	creditCount int,
+	creditKnown bool,
 	round *subscriberResetVoteRoundRow,
 	now time.Time,
 ) *SubscriberResetVoteState {
 	if round == nil || !round.ExpiresAt.After(now) {
+		var availPtr *int
+		if creditKnown {
+			availCopy := max(creditCount, 0)
+			availPtr = &availCopy
+		}
+		canInitiate := eligible && creditKnown && creditCount > 0
+		blockReason := ""
+		if eligible && !canInitiate {
+			if creditKnown {
+				blockReason = SubscriberResetVoteBlockNoResetCard
+			} else {
+				blockReason = SubscriberResetVoteBlockResetCardUnqueried
+			}
+		}
 		return &SubscriberResetVoteState{
-			Supported:        true,
-			Eligible:         eligible,
-			CanVote:          eligible,
-			HasVoted:         false,
-			IneligibleReason: ineligibleReason,
-			Status:           SubscriberResetVoteStatusNone,
-			VoteCount:        0,
-			Threshold:        SubscriberResetVoteThreshold,
-			CooldownActive:   false,
-			CanInitiate:      eligible,
+			Supported:             true,
+			Eligible:              eligible,
+			CanVote:               canInitiate,
+			HasVoted:              false,
+			IneligibleReason:      ineligibleReason,
+			Status:                SubscriberResetVoteStatusNone,
+			VoteCount:             0,
+			Threshold:             SubscriberResetVoteThreshold,
+			CooldownActive:        false,
+			CanInitiate:           canInitiate,
+			AvailableResetCredits: availPtr,
+			BlockReason:           blockReason,
 		}
 	}
 
@@ -1295,7 +1621,7 @@ func (s *CustomSubscriberResetVoteService) GetAdminAccountVoteDetails(
 			return nil, vErr
 		}
 		if round.ExpiresAt.After(now) {
-			projected := s.projectVoteRoundState(false, "", round, now)
+			projected := s.projectVoteRoundState(false, "", 0, false, round, now)
 			details.RoundID = projected.RoundID
 			details.Status = projected.Status
 			details.VoteCount = projected.VoteCount
