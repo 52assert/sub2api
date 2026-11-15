@@ -39,6 +39,14 @@
       </span>
     </div>
 
+    <div
+      v-if="vote.status === 'failed' && failureReasonText"
+      class="max-w-[200px] truncate text-[11px] text-rose-600 dark:text-rose-400"
+      :title="failureReasonText"
+    >
+      {{ failureReasonText }}
+    </div>
+
     <!-- Primary eligible action / status -->
     <template v-if="vote.eligible">
       <button
@@ -62,14 +70,6 @@
         class="text-xs font-medium text-gray-600 dark:text-dark-300"
       >
         {{ t('userSubscriptions.resetVote.votedWaiting', { threshold: vote.threshold }) }}
-      </div>
-
-      <div
-        v-else-if="vote.status === 'failed' && failureReasonText"
-        class="max-w-[200px] truncate text-[11px] text-rose-600 dark:text-rose-400"
-        :title="failureReasonText"
-      >
-        {{ failureReasonText }}
       </div>
 
       <!-- 24h round remaining / cooldown countdown -->
@@ -116,6 +116,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import type { SubscriberAccountItem } from '@/api/subscriptions'
+import { resolveResetVoteFailureReason } from '@/utils/resetVote'
 
 const props = defineProps<{
   account: SubscriberAccountItem
@@ -151,16 +152,7 @@ const actionButtonLabel = computed(() => {
 const failureReasonText = computed(() => {
   const v = vote.value
   if (!v || v.status !== 'failed') return ''
-  if (v.card_status === 'no_credit' || v.error_code === 'NO_RESET_CARD') {
-    return t('userSubscriptions.resetVote.noCredit')
-  }
-  if (v.card_status === 'unknown' || v.error_code === 'RESET_CARD_UNKNOWN') {
-    return t('userSubscriptions.resetVote.unknownResult')
-  }
-  if (v.card_status === 'succeeded' && v.subscription_reset_status === 'failed') {
-    return t('userSubscriptions.resetVote.subscriptionResetFailed')
-  }
-  return v.error_message || ''
+  return resolveResetVoteFailureReason(v, t)
 })
 
 function formatRemainingWindow(expiresAt?: string): string {

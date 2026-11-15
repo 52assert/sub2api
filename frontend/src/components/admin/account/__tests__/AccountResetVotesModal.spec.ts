@@ -157,4 +157,31 @@ describe('AccountResetVotesModal', () => {
     expect(getAccountResetVotes).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('userSubscriptions.resetVote.noEligibleMembers')
   })
+
+  it('renders localized unknownResult instead of raw English error_message on failed unknown round', async () => {
+    vi.mocked(getAccountResetVotes).mockResolvedValue({
+      account_id: 104,
+      account_name: 'Pro200 Milo',
+      supported: true,
+      status: 'failed',
+      round_id: 12,
+      vote_count: 3,
+      threshold: 3,
+      eligible_count: 4,
+      card_status: 'unknown',
+      subscription_reset_status: 'pending',
+      error_code: 'RESET_CARD_UNKNOWN',
+      error_message: 'Reset card outcome is unknown; please verify account quota before retrying',
+      cooldown_active: true,
+      voters: [],
+      non_voters: [],
+      last_round: null,
+    })
+
+    const wrapper = mountModal({ show: true, account: { id: 104, name: 'Pro200 Milo' } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('userSubscriptions.resetVote.unknownResult')
+    expect(wrapper.text()).not.toContain('Reset card outcome is unknown; please verify account quota before retrying')
+  })
 })

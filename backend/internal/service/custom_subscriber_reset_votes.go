@@ -553,6 +553,7 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 		return failRound("no_credit", "pending", "NO_RESET_CARD", "No reset card is available for this account", "", 0)
 	}
 
+	targetedCardID := ""
 	var resetRes *OpenAIQuotaResetResult
 	var resetErr error
 	if len(usage.autoResetCandidates) > 0 {
@@ -560,39 +561,55 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 		if cardErr != nil {
 			return failRound("no_credit", "pending", "NO_RESET_CARD", cardErr.Error(), "", 0)
 		}
+		targetedCardID = strings.TrimSpace(candidate.ID)
 		resetRes, resetErr = s.quota.ResetCreditTargeted(ctx, round.AccountID, candidate.ID, round.RequestID)
 	} else {
 		resetRes, resetErr = s.quota.ResetCreditWithRequestID(ctx, round.AccountID, round.RequestID)
 	}
 
+	var reconciledUsage *OpenAIQuotaUsage
+	needsReconcile := false
 	if resetErr != nil {
 		code := infraerrors.Code(resetErr)
 		reason := infraerrors.Reason(resetErr)
-		if reason == "OPENAI_QUOTA_RESET_REQUEST_FAILED" || code >= http.StatusInternalServerError || code == http.StatusRequestTimeout || errors.Is(resetErr, context.Canceled) || errors.Is(resetErr, context.DeadlineExceeded) {
+		if reason != "OPENAI_QUOTA_RESET_REQUEST_FAILED" && code < http.StatusInternalServerError && code != http.StatusRequestTimeout && !errors.Is(resetErr, context.Canceled) && !errors.Is(resetErr, context.DeadlineExceeded) {
+			return failRound("failed", "pending", safeCustomAccountScheduleReason(reason), "Reset card consumption failed", "", 0)
+		}
+		needsReconcile = true
+	} else {
+		switch classifySubscriberVoteResetResult(resetRes) {
+		case "no_credit":
+			s.cacheObservedResetCredits(ctx, round.AccountID, &OpenAIRateLimitResetCredits{AvailableCount: 0})
+			return failRound("no_credit", "pending", "NO_RESET_CARD", "No reset card is available for this account", "", 0)
+		case "failed":
+			return failRound("failed", "pending", "RESET_CARD_FAILED", "Reset card consumption failed", "", 0)
+		case "unknown":
+			needsReconcile = true
+		case "succeeded":
+			// Upstream confirmed reset card consumption.
+		}
+	}
+
+	if needsReconcile {
+		afterUsage, confirmed := s.reconcileUnknownVoteCardOutcome(ctx, round.AccountID, usage, targetedCardID)
+		if !confirmed {
 			return failRound("unknown", "pending", "RESET_CARD_UNKNOWN", "Reset card outcome is unknown; please verify account quota before retrying", "", 0)
 		}
-		return failRound("failed", "pending", safeCustomAccountScheduleReason(reason), "Reset card consumption failed", "", 0)
-	}
-	if resetRes == nil {
-		return failRound("unknown", "pending", "RESET_CARD_UNKNOWN", "Reset card outcome is unknown; please verify account quota before retrying", "", 0)
+		reconciledUsage = afterUsage
 	}
 
-	code := strings.ToLower(strings.TrimSpace(resetRes.Code))
-	if code == "no_credit" {
-		return failRound("no_credit", "pending", "NO_RESET_CARD", "No reset card is available for this account", "", 0)
-	}
-	if code != "ok" && code != "success" {
-		return failRound("unknown", "pending", "RESET_CARD_UNKNOWN", "Reset card outcome is unknown; please verify account quota before retrying", "", 0)
-	}
+	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer postCancel()
 
 	// Durable checkpoint: upstream card was consumed, never re-charge this card.
-	if err := s.markCardSucceeded(ctx, round.ID); err != nil {
+	if err := s.markCardSucceeded(postCtx, round.ID); err != nil {
 		slog.Warn("subscriber_reset_vote_card_checkpoint_failed", "round_id", round.ID, "account_id", round.AccountID, "error", err)
 	}
 	s.invalidateResetCreditRefreshCache(round.AccountID)
 	round.CardStatus = "succeeded"
 
-	post := RunOpenAIQuotaResetPostProcess(ctx, round.AccountID, s.quota, s.recoverer, func(loadCtx context.Context, id int64) (*Account, error) {
+	workflowQuota := &preloadedVoteResetWorkflowQuota{inner: s.quota, preloaded: reconciledUsage}
+	post := RunOpenAIQuotaResetPostProcess(postCtx, round.AccountID, workflowQuota, s.recoverer, func(loadCtx context.Context, id int64) (*Account, error) {
 		if s.accounts == nil {
 			return nil, errors.New("account repository unavailable")
 		}
@@ -601,7 +618,7 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 	s.invalidateResetCreditRefreshCache(round.AccountID)
 	warningCode := post.WarningCode
 
-	resetCount, subErr := s.resets.ResetByVote(ctx, round.AccountID, round.RequestID, triggeringUserID)
+	resetCount, subErr := s.resets.ResetByVote(postCtx, round.AccountID, round.RequestID, triggeringUserID)
 	if subErr != nil {
 		if errors.Is(subErr, ErrScheduledSubscriptionCacheRefresh) {
 			warningCode = "subscription_cache_refresh_failed"
@@ -619,10 +636,141 @@ func (s *CustomSubscriberResetVoteService) executeTriggeredRound(
 	round.ErrorMessage = ""
 	round.WarningCode = warningCode
 	round.CompletedAt = &now
-	if dbErr := s.persistRoundOutcome(ctx, round); dbErr != nil {
+	if dbErr := s.persistRoundOutcome(postCtx, round); dbErr != nil {
 		slog.Warn("subscriber_reset_vote_persist_succeeded_failed", "round_id", round.ID, "account_id", round.AccountID, "error", dbErr)
 	}
 	return round
+}
+
+// classifySubscriberVoteResetResult normalizes an HTTP 2xx consume response into
+// "succeeded", "no_credit", "failed", or "unknown".
+func classifySubscriberVoteResetResult(res *OpenAIQuotaResetResult) string {
+	if res == nil {
+		return "unknown"
+	}
+	code := strings.ToLower(strings.TrimSpace(res.Code))
+	if code == "no_credit" || code == "no_credits" {
+		return "no_credit"
+	}
+
+	creditRedeemed := false
+	if res.Credit != nil {
+		creditStatus := strings.ToLower(strings.TrimSpace(res.Credit.Status))
+		redeemedAt := strings.TrimSpace(res.Credit.RedeemedAt)
+		creditRedeemed = creditStatus == "redeemed" || creditStatus == "consumed" || creditStatus == "succeeded" || redeemedAt != ""
+	}
+	if creditRedeemed || res.WindowsReset > 0 {
+		return "succeeded"
+	}
+
+	switch code {
+	case "ok", "success", "succeeded", "redeemed", "credit_redeemed", "already_redeemed", "consumed", "completed", "done", "":
+		return "succeeded"
+	case "failed", "failure", "error", "invalid", "invalid_request", "rejected", "denied", "rate_limited":
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func maxOpenAIQuotaUsedPercent(usage *OpenAIQuotaUsage) (bool, float64) {
+	if usage == nil || usage.RateLimit == nil {
+		return false, 0
+	}
+	hasWindow := false
+	maxUsed := 0.0
+	for _, w := range []*OpenAIRateLimitWindow{usage.RateLimit.PrimaryWindow, usage.RateLimit.SecondaryWindow} {
+		if w == nil {
+			continue
+		}
+		if !hasWindow || w.UsedPercent > maxUsed {
+			maxUsed = w.UsedPercent
+			hasWindow = true
+		}
+	}
+	return hasWindow, maxUsed
+}
+
+func containsVoteAutoResetCandidate(candidates []openAIAutoResetCreditCandidate, cardID string) bool {
+	target := strings.TrimSpace(cardID)
+	if target == "" {
+		return false
+	}
+	for _, c := range candidates {
+		if strings.TrimSpace(c.ID) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func didConfirmVoteCardConsumed(beforeUsage, afterUsage *OpenAIQuotaUsage, targetedCardID string) bool {
+	if beforeUsage == nil || beforeUsage.RateLimitResetCredits == nil ||
+		afterUsage == nil || afterUsage.RateLimitResetCredits == nil {
+		return false
+	}
+	if afterUsage.RateLimitResetCredits.AvailableCount >= beforeUsage.RateLimitResetCredits.AvailableCount {
+		return false
+	}
+
+	beforeHasWin, beforeMaxUsed := maxOpenAIQuotaUsedPercent(beforeUsage)
+	afterHasWin, afterMaxUsed := maxOpenAIQuotaUsedPercent(afterUsage)
+	// Guard against mistaking natural card expiration (count drop with unchanged high usage) for redemption.
+	if beforeHasWin && beforeMaxUsed >= 5 && afterHasWin && !(afterMaxUsed < beforeMaxUsed) {
+		return false
+	}
+
+	if strings.TrimSpace(targetedCardID) != "" &&
+		(afterUsage.RateLimitResetCredits.AvailableCount == 0 || len(afterUsage.autoResetCandidates) >= afterUsage.RateLimitResetCredits.AvailableCount) {
+		return !containsVoteAutoResetCandidate(afterUsage.autoResetCandidates, targetedCardID)
+	}
+	return beforeHasWin && afterHasWin && beforeMaxUsed >= 5 && afterMaxUsed < beforeMaxUsed
+}
+
+func (s *CustomSubscriberResetVoteService) reconcileUnknownVoteCardOutcome(
+	ctx context.Context,
+	accountID int64,
+	beforeUsage *OpenAIQuotaUsage,
+	targetedCardID string,
+) (*OpenAIQuotaUsage, bool) {
+	if s == nil || s.quota == nil {
+		return nil, false
+	}
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+
+	afterUsage, err := s.quota.QueryUsage(reconcileCtx, accountID)
+	if err != nil || afterUsage == nil {
+		return nil, false
+	}
+	if didConfirmVoteCardConsumed(beforeUsage, afterUsage, targetedCardID) {
+		return afterUsage, true
+	}
+
+	// Refresh cached snapshots even when consumption could not be confirmed so UI reflects latest observed quota/cards.
+	s.invalidateResetCreditRefreshCache(accountID)
+	if cacheErr := s.quota.CachePostResetSnapshot(reconcileCtx, accountID, afterUsage); cacheErr != nil && afterUsage.RateLimitResetCredits != nil {
+		s.cacheObservedResetCredits(reconcileCtx, accountID, afterUsage.RateLimitResetCredits)
+	}
+	return afterUsage, false
+}
+
+type preloadedVoteResetWorkflowQuota struct {
+	inner     subscriberVoteQuotaClient
+	preloaded *OpenAIQuotaUsage
+}
+
+func (q *preloadedVoteResetWorkflowQuota) QueryUsage(ctx context.Context, accountID int64) (*OpenAIQuotaUsage, error) {
+	if q.preloaded != nil {
+		usage := q.preloaded
+		q.preloaded = nil
+		return usage, nil
+	}
+	return q.inner.QueryUsage(ctx, accountID)
+}
+
+func (q *preloadedVoteResetWorkflowQuota) CachePostResetSnapshot(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage) error {
+	return q.inner.CachePostResetSnapshot(ctx, accountID, usage)
 }
 
 func (s *CustomSubscriberResetVoteService) queryAccountsWithSubscriptionGroups(ctx context.Context, accountIDs []int64) (map[int64]bool, error) {
@@ -830,8 +978,10 @@ func (s *CustomSubscriberResetVoteService) loadLatestRoundForUpdate(ctx context.
 }
 
 func (s *CustomSubscriberResetVoteService) markCardSucceeded(ctx context.Context, roundID int64) error {
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	_, err := s.db.ExecContext(
-		ctx,
+		dbCtx,
 		`UPDATE custom_subscriber_reset_vote_rounds
 		 SET card_status = 'succeeded', updated_at = $2
 		 WHERE id = $1 AND status = 'executing'`,
@@ -842,8 +992,10 @@ func (s *CustomSubscriberResetVoteService) markCardSucceeded(ctx context.Context
 }
 
 func (s *CustomSubscriberResetVoteService) persistRoundOutcome(ctx context.Context, round *subscriberResetVoteRoundRow) error {
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	_, err := s.db.ExecContext(
-		ctx,
+		dbCtx,
 		`UPDATE custom_subscriber_reset_vote_rounds
 		 SET status = $2,
 		     card_status = $3,
