@@ -416,7 +416,7 @@ func (s *CustomAccountScheduleService) execute(ctx context.Context, v *CustomAcc
 	if code == "no_credit" {
 		return fail("No reset card is available", false)
 	}
-	if code != "ok" && code != "success" {
+	if code != "ok" && code != "success" && code != "reset" {
 		return customAccountScheduleResult{status: "unknown", message: "Reset card result is unknown; schedule paused for manual review", pause: true}
 	}
 	// A successful redemption belongs to the pinned upstream identity. Do not

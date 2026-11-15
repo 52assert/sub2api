@@ -141,7 +141,7 @@ export default {
     usageOf: '{used} of {limit}',
     resetVote: {
       column: 'Reset Vote',
-      hint: 'Only active members of this account’s subscription groups can vote (quota/standard group members cannot vote). Reaching 3 votes automatically uses a reset card and resets the corresponding subscription groups’ daily & weekly usage. Each vote round lasts 24 hours; 1 vote per user within 24 hours.',
+      hint: 'Only active members of this account’s subscription groups can vote (quota/standard group members cannot vote). A vote can only be started when at least 1 reset card is available; reaching 3 votes automatically uses a reset card and resets the corresponding subscription groups’ daily & weekly usage. Each vote round lasts 24 hours; 1 vote per user within 24 hours.',
       initiate: 'Start Reset Vote',
       voteAction: 'Vote Reset',
       triggerVoteAction: 'Vote & Reset',
@@ -152,6 +152,7 @@ export default {
       subscriptionsResetCount: '{count} subscription(s) reset',
       failed: 'Reset Failed',
       noCredit: 'No reset card available',
+      queryCreditFirst: 'Check reset cards first',
       unknownResult: 'Reset result unknown',
       subscriptionResetFailed: 'Card used, subscription reset failed',
       quotaGroupForbidden: 'Quota group cannot vote',

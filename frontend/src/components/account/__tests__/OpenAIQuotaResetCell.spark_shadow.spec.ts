@@ -529,6 +529,12 @@ describe('OpenAIQuotaResetCell readonly 共享账号视图', () => {
     expect(wrapper.text()).toContain('userSubscriptions.resetCredits.count1')
     expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.expiresAt:')
     expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.refreshCachePersistFailed')
+    const emitted = wrapper.emitted('account-updated')
+    expect(emitted).toBeTruthy()
+    expect((emitted?.[0]?.[0] as Account)?.extra?.codex_reset_credit_snapshot).toEqual({
+      available_count: 1,
+      credits: [{ expires_at: FUTURE_EXPIRY_EARLY }],
+    })
     wrapper.unmount()
   })
 })

@@ -253,6 +253,24 @@ func TestCustomSubscriberResetVotesEndToEnd(t *testing.T) {
 	require.NotNil(t, expiredAdminDetails.LastRound)
 	require.Len(t, expiredAdminDetails.LastRound.Voters, 3)
 
+	// Zero reset cards blocks initiating a new round until reset cards become > 0.
+	quota.usage.RateLimitResetCredits.AvailableCount = 0
+	_, err = svc.CastVote(ctx, 1, 10)
+	require.Equal(t, "NO_RESET_CARD", infraerrors.Reason(err))
+	zeroStates, err := svc.GetStatesForAccounts(ctx, 1, []*Account{{
+		ID:       10,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Extra:    map[string]any{SubscriberVisibleExtraKey: true},
+	}})
+	require.NoError(t, err)
+	require.False(t, zeroStates[10].CanInitiate)
+	require.False(t, zeroStates[10].CanVote)
+	require.Equal(t, SubscriberResetVoteBlockNoResetCard, zeroStates[10].BlockReason)
+
+	quota.usage.RateLimitResetCredits.AvailableCount = 1
+
 	// Fresh vote round can now be initiated cleanly, and admin sees exact voter vs non-voters.
 	reinitRes, err := svc.CastVote(ctx, 1, 10)
 	require.NoError(t, err)

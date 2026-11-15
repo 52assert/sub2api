@@ -198,6 +198,7 @@
                 :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
                 :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
                 @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
+                @account-updated="handleAccountUpdated"
               />
             </template>
 
@@ -281,7 +282,7 @@ import SubscriberResetVoteCell from '@/components/account/SubscriberResetVoteCel
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import { resolveResetVoteFailureReason } from '@/utils/resetVote'
+import { readAvailableResetCreditsFromExtra, resolveResetVoteFailureReason } from '@/utils/resetVote'
 import type { Account, AccountUsageInfo, UserSubscription, WindowStats } from '@/types'
 
 const { t } = useI18n()
@@ -798,6 +799,40 @@ function resolveVoteFailureReason(state: SubscriberAccountItem['reset_vote']): s
   return resolveResetVoteFailureReason(state, t, 'userSubscriptions.resetVote.requestFailed')
 }
 
+const handleAccountUpdated = (updated: Account) => {
+  const nextCredits = readAvailableResetCreditsFromExtra(
+    updated.extra as Record<string, unknown> | undefined
+  )
+  accounts.value = accounts.value.map((item) => {
+    if (item.id !== updated.id) return item
+    const prevVote = item.reset_vote
+    let nextVote = prevVote
+    if (prevVote && prevVote.supported && prevVote.status === 'none') {
+      const creditKnown = nextCredits !== null
+      const available = nextCredits ?? 0
+      const canInitiate = prevVote.eligible && creditKnown && available > 0
+      const blockReason =
+        prevVote.eligible && !canInitiate
+          ? creditKnown
+            ? 'no_reset_card'
+            : 'reset_card_unqueried'
+          : ''
+      nextVote = {
+        ...prevVote,
+        available_reset_credits: creditKnown ? available : undefined,
+        can_initiate: canInitiate,
+        can_vote: canInitiate,
+        block_reason: blockReason || undefined
+      }
+    }
+    return {
+      ...item,
+      extra: updated.extra,
+      reset_vote: nextVote
+    }
+  })
+}
+
 async function submitVote(account: SubscriberAccountItem) {
   if (votingAccountIds.value[account.id]) return
   votingAccountIds.value = { ...votingAccountIds.value, [account.id]: true }
@@ -845,7 +880,11 @@ async function submitVote(account: SubscriberAccountItem) {
       )
     }
   } catch (error: any) {
-    const msg = error?.response?.data?.message || error?.message || t('userSubscriptions.resetVote.requestFailed')
+    const reason = error?.reason ?? error?.response?.data?.reason
+    const msg =
+      reason === 'NO_RESET_CARD'
+        ? t('userSubscriptions.resetVote.noCredit')
+        : error?.response?.data?.message || error?.message || t('userSubscriptions.resetVote.requestFailed')
     appStore.showError(msg)
     await load()
   } finally {

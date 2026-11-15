@@ -138,7 +138,7 @@ export default {
     usageOf: '已用 {used} / {limit}',
     resetVote: {
       column: '投票重置',
-      hint: '仅该账号订阅分组成员可参与投票（额度分组成员不可投票）。满 3 人自动使用重置卡并重置对应订阅分组已用额度；每次发起 24 小时有效，24 小时内每人限投 1 票，24 小时后可重新发起。',
+      hint: '仅该账号订阅分组成员可参与投票（额度分组成员不可投票）。账号可用重置卡 > 0 时方可发起投票，满 3 人自动使用重置卡并重置对应订阅分组已用额度；每次发起 24 小时有效，24 小时内每人限投 1 票，24 小时后可重新发起。',
       initiate: '发起重置投票',
       voteAction: '投票重置',
       triggerVoteAction: '投票触发重置',
@@ -149,6 +149,7 @@ export default {
       subscriptionsResetCount: '已重置 {count} 个订阅',
       failed: '重置未完成',
       noCredit: '暂无可用重置卡',
+      queryCreditFirst: '请先查询重置卡',
       unknownResult: '重置结果待确认',
       subscriptionResetFailed: '重置卡已用，但订阅额度重置失败',
       quotaGroupForbidden: '额度分组不可投票',
