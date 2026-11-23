@@ -5,6 +5,8 @@ import RegisterView from '@/views/auth/RegisterView.vue'
 const {
   getPublicSettingsMock,
   registerMock,
+  validateInvitationCodeMock,
+  validatePromoCodeMock,
   showErrorMock,
   pushMock,
   verifyActionMock,
@@ -12,6 +14,8 @@ const {
 } = vi.hoisted(() => ({
   getPublicSettingsMock: vi.fn(),
   registerMock: vi.fn(),
+  validateInvitationCodeMock: vi.fn(),
+  validatePromoCodeMock: vi.fn(),
   showErrorMock: vi.fn(),
   pushMock: vi.fn(),
   verifyActionMock: vi.fn(),
@@ -69,7 +73,9 @@ vi.mock('@/api/auth', async () => {
   const actual = await vi.importActual<typeof import('@/api/auth')>('@/api/auth')
   return {
     ...actual,
-    getPublicSettings: (...args: unknown[]) => getPublicSettingsMock(...args)
+    getPublicSettings: (...args: unknown[]) => getPublicSettingsMock(...args),
+    validateInvitationCode: (...args: unknown[]) => validateInvitationCodeMock(...args),
+    validatePromoCode: (...args: unknown[]) => validatePromoCodeMock(...args)
   }
 })
 
@@ -97,8 +103,11 @@ function mountRegister() {
 
 describe('RegisterView', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     getPublicSettingsMock.mockReset()
     registerMock.mockReset()
+    validateInvitationCodeMock.mockReset()
+    validatePromoCodeMock.mockReset()
     showErrorMock.mockReset()
     pushMock.mockReset()
     verifyActionMock.mockReset()
@@ -107,6 +116,8 @@ describe('RegisterView', () => {
     verifyActionMock.mockResolvedValue({ token: 'ticket', randstr: 'randstr' })
     getPublicSettingsMock.mockResolvedValue(publicSettings)
     registerMock.mockResolvedValue({})
+    validateInvitationCodeMock.mockResolvedValue({ valid: true })
+    validatePromoCodeMock.mockResolvedValue({ valid: true, bonus_amount: 0 })
   })
 
   it('does not flash the promo-code field before disabled settings finish loading', async () => {
@@ -324,5 +335,140 @@ describe('RegisterView', () => {
       expect.objectContaining({ email: 'user@allowed.com' })
     )
     expect(showErrorMock).not.toHaveBeenCalled()
+  })
+
+  it('shows LOGIN_IP_BANNED instead of invalid invitation code when validateInvitationCode fails with 403', async () => {
+    vi.useFakeTimers()
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      turnstile_enabled: false,
+      invitation_code_enabled: true
+    })
+    validateInvitationCodeMock.mockRejectedValue({
+      status: 403,
+      reason: 'LOGIN_IP_BANNED',
+      message: 'This IP has been permanently banned after 3 failed login attempts.'
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('#invitation_code').setValue('valid-looking-code')
+
+    await vi.advanceTimersByTimeAsync(500)
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.errors.LOGIN_IP_BANNED')
+    expect(showErrorMock).not.toHaveBeenCalledWith('auth.invitationCodeInvalid')
+    expect(wrapper.get('#invitation_code').classes()).not.toContain('border-red-500')
+
+    showErrorMock.mockReset()
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.errors.LOGIN_IP_BANNED')
+    expect(showErrorMock).not.toHaveBeenCalledWith('auth.invitationCodeInvalidCannotRegister')
+    expect(registerMock).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('shows RATE_LIMITED when validateInvitationCode returns HTTP 429', async () => {
+    vi.useFakeTimers()
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      turnstile_enabled: false,
+      invitation_code_enabled: true
+    })
+    validateInvitationCodeMock.mockRejectedValueOnce({
+      status: 429,
+      message: 'Too many requests, please try again later'
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#invitation_code').setValue('some-code')
+
+    await vi.advanceTimersByTimeAsync(500)
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.errors.RATE_LIMITED')
+    expect(showErrorMock).not.toHaveBeenCalledWith('auth.invitationCodeInvalid')
+    vi.useRealTimers()
+  })
+
+  it('shows LOGIN_PROTECTION_UNAVAILABLE when validateInvitationCode returns HTTP 503', async () => {
+    vi.useFakeTimers()
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      turnstile_enabled: false,
+      invitation_code_enabled: true
+    })
+    validateInvitationCodeMock.mockRejectedValueOnce({
+      status: 503,
+      reason: 'LOGIN_PROTECTION_UNAVAILABLE',
+      message: 'Login protection is temporarily unavailable.'
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#invitation_code').setValue('some-code')
+
+    await vi.advanceTimersByTimeAsync(500)
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.errors.LOGIN_PROTECTION_UNAVAILABLE')
+    vi.useRealTimers()
+  })
+
+  it('still reports invalid invitation code when backend returns valid: false with INVITATION_CODE_NOT_FOUND', async () => {
+    vi.useFakeTimers()
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      turnstile_enabled: false,
+      invitation_code_enabled: true
+    })
+    validateInvitationCodeMock.mockResolvedValueOnce({
+      valid: false,
+      error_code: 'INVITATION_CODE_NOT_FOUND'
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#invitation_code').setValue('missing-code')
+
+    await vi.advanceTimersByTimeAsync(500)
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.invitationCodeInvalid')
+    expect(wrapper.get('#invitation_code').classes()).toContain('border-red-500')
+    vi.useRealTimers()
+  })
+
+  it('shows LOGIN_IP_BANNED instead of invalid promo code when validatePromoCode fails with 403', async () => {
+    vi.useFakeTimers()
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      turnstile_enabled: false,
+      promo_code_enabled: true
+    })
+    validatePromoCodeMock.mockRejectedValueOnce({
+      status: 403,
+      reason: 'LOGIN_IP_BANNED',
+      message: 'This IP has been permanently banned after 3 failed login attempts.'
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#promo_code').setValue('PROMO123')
+
+    await vi.advanceTimersByTimeAsync(500)
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenCalledWith('auth.errors.LOGIN_IP_BANNED')
+    expect(showErrorMock).not.toHaveBeenCalledWith('auth.promoCodeInvalid')
+    expect(wrapper.get('#promo_code').classes()).not.toContain('border-red-500')
+    vi.useRealTimers()
   })
 })

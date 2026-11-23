@@ -252,6 +252,7 @@ export default {
       LOGIN_IP_BANNED: '当前 IP 因累计 3 次登录失败已被永久封禁，请联系管理员解除封禁。',
       LOGIN_PROTECTION_UNAVAILABLE: '登录安全服务暂时不可用，请稍后重试。',
       EMAIL_BLOCKED: '该邮箱不允许注册，请更换其他邮箱。',
+      RATE_LIMITED: '请求过于频繁，请稍后再试。',
     },
     registrationFailed: '注册失败，请重试。',
     emailDomainRegistrationLimit:
@@ -299,6 +300,7 @@ export default {
     promoCodeAlreadyUsed: '您已使用过此优惠码',
     promoCodeValidating: '优惠码正在验证中，请稍候',
     promoCodeInvalidCannotRegister: '优惠码无效，请检查后重试或清空优惠码',
+    promoCodeValidateFailed: '优惠码校验失败，请稍后重试',
     invitationCodeLabel: '邀请码',
     invitationCodePlaceholder: '请输入邀请码',
     invitationCodeRequired: '请输入邀请码',
@@ -306,6 +308,7 @@ export default {
     invitationCodeInvalid: '邀请码无效或已被使用',
     invitationCodeValidating: '正在验证邀请码...',
     invitationCodeInvalidCannotRegister: '邀请码无效，请检查后重试',
+    invitationCodeValidateFailed: '邀请码校验失败，请稍后重试',
     oauthOrContinue: '或使用其他继续',
     linuxdo: {
       signIn: '使用 Linux.do 登录',

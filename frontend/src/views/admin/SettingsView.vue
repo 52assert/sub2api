@@ -1996,6 +1996,8 @@
             </div>
           </div>
 
+          <UserAgentLimitCard />
+
           <!-- 人机验证 Settings -->
           <div class="card">
             <div
@@ -9005,6 +9007,7 @@ import {
 } from "@/utils/rechargeBonus";
 import RegistrationEmailBlacklistEditor from "@/components/admin/settings/RegistrationEmailBlacklistEditor.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
+import UserAgentLimitCard from "@/views/admin/settings/UserAgentLimitCard.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import {
   useStepUp,

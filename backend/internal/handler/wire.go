@@ -54,6 +54,7 @@ func ProvideAdminHandlers(
 	accountSchedules *service.CustomAccountScheduleService,
 	claudeResetCredits *service.ClaudeResetCreditService,
 	subscriberResetVotes *service.CustomSubscriberResetVoteService,
+	userAgentLimit *service.CustomUserAgentLimitService,
 ) *AdminHandlers {
 	accountHandler.SetCustomCodexResetService(customCodexReset)
 	accountHandler.SetCustomAccountScheduleService(accountSchedules)
@@ -62,6 +63,8 @@ func ProvideAdminHandlers(
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
+	userHandler.SetCustomUserAgentLimitService(userAgentLimit)
+	settingHandler.SetCustomUserAgentLimitService(userAgentLimit)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,

@@ -580,6 +580,19 @@
             />
           </template>
 
+          <template #cell-user_agents="{ row }">
+            <button
+              type="button"
+              :data-testid="`user-ua-cell-${row.id}`"
+              class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-opacity hover:opacity-80"
+              :class="getUserAgentBadgeClass(row.id)"
+              :title="t('admin.users.userAgentLimit.menuItem')"
+              @click="handleUserAgentLimit(row)"
+            >
+              <span>{{ getUserAgentBadgeText(row.id) }}</span>
+            </button>
+          </template>
+
           <template #cell-status="{ value }">
             <div class="flex items-center gap-1.5">
               <span
@@ -732,6 +745,15 @@
                 {{ t('admin.users.platformQuota.menuItem') }}
               </button>
 
+              <!-- User-Agent Limit -->
+              <button
+                @click="handleUserAgentLimit(user); closeActionMenu()"
+                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+              >
+                <Icon name="shield" size="sm" class="text-gray-400" :stroke-width="2" />
+                {{ t('admin.users.userAgentLimit.menuItem') }}
+              </button>
+
               <!-- Balance History -->
               <button
                 @click="handleBalanceHistory(user); closeActionMenu()"
@@ -782,6 +804,12 @@
       @close="closePlatformQuotaModal"
       @success="loadUsers"
     />
+    <UserAgentLimitModal
+      :show="showUserAgentLimitModal"
+      :user="userAgentLimitUser"
+      @close="closeUserAgentLimitModal"
+      @updated="refreshCurrentPageSecondaryData"
+    />
     <UserApiKeysModal :show="showApiKeysModal" :user="viewingUser" @close="closeApiKeysModal" />
     <UserAllowedGroupsModal :show="showAllowedGroupsModal" :user="allowedGroupsUser" @close="closeAllowedGroupsModal" @success="loadUsers" />
     <UserBalanceModal :show="showBalanceModal" :user="balanceUser" :operation="balanceOperation" @close="closeBalanceModal" @success="loadUsers" />
@@ -804,7 +832,7 @@ const { t } = useI18n()
 import { adminAPI } from '@/api/admin'
 import type { AdminUser, AdminGroup, UserAttributeDefinition } from '@/types'
 import type { BatchUserUsageStats } from '@/api/admin/dashboard'
-import type { PlatformQuotaItem } from '@/api/admin/users'
+import type { PlatformQuotaItem, UserAgentLimitUserSummary } from '@/api/admin/users'
 import type { Column } from '@/components/common/types'
 import type { SelectOption } from '@/components/common/Select.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -825,6 +853,7 @@ import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
 import BulkEditUserModal from '@/components/admin/user/BulkEditUserModal.vue'
 import UserPlatformQuotaModal from '@/components/admin/user/UserPlatformQuotaModal.vue'
+import UserAgentLimitModal from '@/components/admin/user/UserAgentLimitModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
 import UserAllowedGroupsModal from '@/components/admin/user/UserAllowedGroupsModal.vue'
 import UserBalanceModal from '@/components/admin/user/UserBalanceModal.vue'
@@ -898,6 +927,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'usage_gemini', label: t('admin.users.columns.usageGemini'), sortable: false },
   { key: 'usage_antigravity', label: t('admin.users.columns.usageAntigravity'), sortable: false },
   { key: 'concurrency', label: t('admin.users.columns.concurrency'), sortable: true },
+  { key: 'user_agents', label: t('admin.users.columns.userAgents'), sortable: false },
   { key: 'status', label: t('admin.users.columns.status'), sortable: true },
   { key: 'last_active_at', label: t('admin.users.columns.lastActive'), sortable: true },
   { key: 'last_used_at', label: t('admin.users.columns.lastUsed'), sortable: true },
@@ -997,7 +1027,7 @@ const toggleColumn = (key: string) => {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
-  if (wasHidden && (key === 'usage' || key.startsWith('usage_') || key.startsWith('attr_') || key === 'balance_platform_quota')) {
+  if (wasHidden && (key === 'usage' || key.startsWith('usage_') || key.startsWith('attr_') || key === 'balance_platform_quota' || key === 'user_agents')) {
     refreshCurrentPageSecondaryData()
   }
   if (key === 'subscriptions') {
@@ -1028,6 +1058,7 @@ const hasVisibleUsageColumn = computed(
 )
 const hasVisibleGroupsColumn = computed(() => !hiddenColumns.has('groups'))
 const hasVisiblePlatformQuotaColumn = computed(() => !hiddenColumns.has('balance_platform_quota'))
+const hasVisibleUserAgentsColumn = computed(() => !hiddenColumns.has('user_agents'))
 const hasVisibleAttributeColumns = computed(() =>
   attributeDefinitions.value.some((def) => def.enabled && !hiddenColumns.has(`attr_${def.id}`))
 )
@@ -1214,6 +1245,32 @@ const getAttributeDefinition = (attrId: number): UserAttributeDefinition | undef
 }
 const usageStats = ref<Record<string, BatchUserUsageStats>>({})
 const platformQuotaStats = ref<Record<number, PlatformQuotaItem[]>>({})
+const userAgentSummaries = ref<Record<number, UserAgentLimitUserSummary>>({})
+
+const getUserAgentBadgeText = (userId: number): string => {
+  const s = userAgentSummaries.value[userId]
+  if (!s) return '-'
+  if (!s.enabled) return t('admin.users.userAgentLimit.disabledBadge')
+  if (s.exempt) return t('admin.users.userAgentLimit.exemptBadge', { count: s.active_count })
+  return `${s.active_count} / ${s.effective_limit}`
+}
+
+const getUserAgentBadgeClass = (userId: number): string => {
+  const s = userAgentSummaries.value[userId]
+  if (!s || !s.enabled) {
+    return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+  }
+  if (s.exempt) {
+    return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+  }
+  if (s.exceeded) {
+    return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  }
+  if (s.at_limit) {
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  }
+  return 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300'
+}
 
 const getPlatformUsage = (userId: number, platform: string) =>
   usageStats.value[userId]?.by_platform?.find((p) => p.platform === platform)
@@ -1348,10 +1405,12 @@ const bulkDeleting = ref(false)
 const showApiKeysModal = ref(false)
 const showAttributesModal = ref(false)
 const showPlatformQuotaModal = ref(false)
+const showUserAgentLimitModal = ref(false)
 const editingUser = ref<AdminUser | null>(null)
 const deletingUser = ref<AdminUser | null>(null)
 const viewingUser = ref<AdminUser | null>(null)
 const platformQuotaUser = ref<AdminUser | null>(null)
+const userAgentLimitUser = ref<AdminUser | null>(null)
 
 const handlePlatformQuota = (user: AdminUser) => {
   platformQuotaUser.value = user
@@ -1361,6 +1420,16 @@ const handlePlatformQuota = (user: AdminUser) => {
 const closePlatformQuotaModal = () => {
   showPlatformQuotaModal.value = false
   platformQuotaUser.value = null
+}
+
+const handleUserAgentLimit = (user: AdminUser) => {
+  userAgentLimitUser.value = user
+  showUserAgentLimitModal.value = true
+}
+
+const closeUserAgentLimitModal = () => {
+  showUserAgentLimitModal.value = false
+  userAgentLimitUser.value = null
 }
 let abortController: AbortController | null = null
 let secondaryDataSeq = 0
@@ -1432,6 +1501,28 @@ const loadUsersSecondaryData = async (
         } catch (e) {
           if (signal?.aborted) return
           console.error('Failed to load platform quotas:', e)
+        }
+      })()
+    )
+  }
+
+  if (
+    hasVisibleUserAgentsColumn.value &&
+    typeof adminAPI.users?.batchGetUserAgentSummaries === 'function'
+  ) {
+    tasks.push(
+      (async () => {
+        try {
+          const resp = await adminAPI.users.batchGetUserAgentSummaries(userIds)
+          if (signal?.aborted) return
+          if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
+          userAgentSummaries.value = {
+            ...userAgentSummaries.value,
+            ...(resp.summaries || {})
+          }
+        } catch (e) {
+          if (signal?.aborted) return
+          console.error('Failed to load user-agent summaries:', e)
         }
       })()
     )

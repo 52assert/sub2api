@@ -49,7 +49,10 @@ FRONTEND_CRITICAL_VITEST := \
 	src/features/channel-monitor-v2/__tests__/monitorZoom.spec.ts \
 	src/components/admin/channel/__tests__/PricingEntryCard.modelDefaultPrice.spec.ts \
 	src/views/user/__tests__/SubscriptionAccountsView.resetVote.spec.ts \
-	src/components/admin/account/__tests__/AccountResetVotesModal.spec.ts
+	src/components/admin/account/__tests__/AccountResetVotesModal.spec.ts \
+	src/views/auth/__tests__/RegisterView.spec.ts \
+	src/views/admin/settings/__tests__/UserAgentLimitCard.spec.ts \
+	src/components/admin/user/__tests__/UserAgentLimitModal.spec.ts
 
 # 一键编译前后端
 build: build-backend build-frontend

@@ -4,6 +4,17 @@
  */
 
 import { apiClient } from "../client";
+import {
+  getUserAgentLimitSettings,
+  updateUserAgentLimitSettings,
+  type UserAgentLimitSettings,
+} from "./userAgentLimit";
+
+export {
+  getUserAgentLimitSettings,
+  updateUserAgentLimitSettings,
+  type UserAgentLimitSettings,
+};
 import { listPlatformIds } from "@/constants/platformCatalog";
 import type {
   AccountPlatform,
@@ -1636,6 +1647,8 @@ export const settingsAPI = {
   updateRegistrationEmailBlacklist,
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
+  getUserAgentLimitSettings,
+  updateUserAgentLimitSettings,
   getStreamTimeoutSettings,
   updateStreamTimeoutSettings,
   getRectifierSettings,

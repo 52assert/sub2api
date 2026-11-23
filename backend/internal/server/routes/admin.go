@@ -324,6 +324,13 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.PUT("/:id/platform-quotas", h.Admin.User.UpdateUserPlatformQuotas)
 		users.POST("/:id/platform-quotas/reset", h.Admin.User.ResetUserPlatformQuotaWindow)
 
+		// User-Agent rolling window limit management
+		users.POST("/user-agent-summaries", h.Admin.User.BatchGetUserAgentSummaries)
+		users.GET("/:id/user-agents", h.Admin.User.GetUserAgentLimitDetail)
+		users.PUT("/:id/user-agents/policy", h.Admin.User.UpdateUserAgentLimitPolicy)
+		users.DELETE("/:id/user-agents/:record_id", h.Admin.User.DeleteUserAgentRecord)
+		users.DELETE("/:id/user-agents", h.Admin.User.ClearUserAgentRecords)
+
 		// User attribute values
 		users.GET("/:id/attributes", h.Admin.UserAttribute.GetUserAttributes)
 		users.PUT("/:id/attributes", h.Admin.UserAttribute.UpdateUserAttributes)
@@ -614,6 +621,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpA
 		// 面板 API 限流配置
 		adminSettings.GET("/panel-rate-limit", h.Admin.Setting.GetPanelRateLimitSettings)
 		adminSettings.PUT("/panel-rate-limit", h.Admin.Setting.UpdatePanelRateLimitSettings)
+		// User-Agent 数量限制配置
+		adminSettings.GET("/user-agent-limit", h.Admin.Setting.GetUserAgentLimitSettings)
+		adminSettings.PUT("/user-agent-limit", h.Admin.Setting.UpdateUserAgentLimitSettings)
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
