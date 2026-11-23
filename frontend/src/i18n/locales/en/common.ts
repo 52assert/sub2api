@@ -252,6 +252,7 @@ export default {
       LOGIN_IP_BANNED: 'This IP has been permanently banned after 3 failed login attempts. Contact an administrator to unblock it.',
       LOGIN_PROTECTION_UNAVAILABLE: 'Login protection is temporarily unavailable. Please try again later.',
       EMAIL_BLOCKED: 'This email address is not allowed. Please use a different one.',
+      RATE_LIMITED: 'Too many requests. Please try again later.',
     },
     registrationFailed: 'Registration failed. Please try again.',
     emailDomainRegistrationLimit:
@@ -300,6 +301,7 @@ export default {
     promoCodeAlreadyUsed: 'You have already used this promo code',
     promoCodeValidating: 'Promo code is being validated, please wait',
     promoCodeInvalidCannotRegister: 'Invalid promo code. Please check and try again or clear the promo code field',
+    promoCodeValidateFailed: 'Failed to validate promo code. Please try again later.',
     invitationCodeLabel: 'Invitation Code',
     invitationCodePlaceholder: 'Enter invitation code',
     invitationCodeRequired: 'Invitation code is required',
@@ -307,6 +309,7 @@ export default {
     invitationCodeInvalid: 'Invalid or used invitation code',
     invitationCodeValidating: 'Validating invitation code...',
     invitationCodeInvalidCannotRegister: 'Invalid invitation code. Please check and try again',
+    invitationCodeValidateFailed: 'Failed to validate invitation code. Please try again later.',
     oauthOrContinue: 'or continue with others',
     linuxdo: {
       signIn: 'Continue with Linux.do',

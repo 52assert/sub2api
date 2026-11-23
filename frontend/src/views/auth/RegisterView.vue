@@ -485,7 +485,8 @@ const promoValidation = reactive({
   valid: false,
   invalid: false,
   bonusAmount: null as number | null,
-  message: ''
+  message: '',
+  requestError: ''
 })
 let promoValidateTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -494,7 +495,8 @@ const invitationValidating = ref<boolean>(false)
 const invitationValidation = reactive({
   valid: false,
   invalid: false,
-  message: ''
+  message: '',
+  requestError: ''
 })
 let invitationValidateTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -697,15 +699,16 @@ function handlePromoCodeInput(): void {
   promoValidation.invalid = false
   promoValidation.bonusAmount = null
   promoValidation.message = ''
+  promoValidation.requestError = ''
+
+  if (promoValidateTimeout) {
+    clearTimeout(promoValidateTimeout)
+    promoValidateTimeout = null
+  }
 
   if (!code) {
     promoValidating.value = false
     return
-  }
-
-  // Debounce validation
-  if (promoValidateTimeout) {
-    clearTimeout(promoValidateTimeout)
   }
 
   promoValidateTimeout = setTimeout(() => {
@@ -716,28 +719,38 @@ function handlePromoCodeInput(): void {
 async function validatePromoCodeDebounced(code: string): Promise<void> {
   if (!code.trim()) return
 
+  promoValidation.requestError = ''
   promoValidating.value = true
 
   try {
     const result = await validatePromoCode(code)
+    if (formData.promo_code.trim() !== code) return
 
     if (result.valid) {
       promoValidation.valid = true
       promoValidation.invalid = false
       promoValidation.bonusAmount = result.bonus_amount || 0
       promoValidation.message = ''
+      promoValidation.requestError = ''
     } else {
       promoValidation.valid = false
       promoValidation.invalid = true
       promoValidation.bonusAmount = null
+      promoValidation.requestError = ''
       // 根据错误码显示对应的翻译
       promoValidation.message = getPromoErrorMessage(result.error_code)
     }
-  } catch (error) {
+  } catch (error: unknown) {
+    if (formData.promo_code.trim() !== code) return
     console.error('Failed to validate promo code:', error)
+    const msg = buildRegistrationErrorMessage(error, t('auth.promoCodeValidateFailed'))
     promoValidation.valid = false
-    promoValidation.invalid = true
-    promoValidation.message = t('auth.promoCodeInvalid')
+    promoValidation.invalid = false
+    promoValidation.bonusAmount = null
+    promoValidation.message = ''
+    promoValidation.requestError = msg
+    errorMessage.value = msg
+    appStore.showError(msg)
   } finally {
     promoValidating.value = false
   }
@@ -769,15 +782,17 @@ function handleInvitationCodeInput(): void {
   invitationValidation.valid = false
   invitationValidation.invalid = false
   invitationValidation.message = ''
+  invitationValidation.requestError = ''
   errors.invitation_code = ''
 
-  if (!code) {
-    return
-  }
-
-  // Debounce validation
   if (invitationValidateTimeout) {
     clearTimeout(invitationValidateTimeout)
+    invitationValidateTimeout = null
+  }
+
+  if (!code) {
+    invitationValidating.value = false
+    return
   }
 
   invitationValidateTimeout = setTimeout(() => {
@@ -786,24 +801,36 @@ function handleInvitationCodeInput(): void {
 }
 
 async function validateInvitationCodeDebounced(code: string): Promise<void> {
+  if (!code.trim()) return
+
+  invitationValidation.requestError = ''
   invitationValidating.value = true
 
   try {
     const result = await validateInvitationCode(code)
+    if (formData.invitation_code.trim() !== code) return
 
     if (result.valid) {
       invitationValidation.valid = true
       invitationValidation.invalid = false
       invitationValidation.message = ''
+      invitationValidation.requestError = ''
     } else {
       invitationValidation.valid = false
       invitationValidation.invalid = true
+      invitationValidation.requestError = ''
       invitationValidation.message = getInvitationErrorMessage(result.error_code)
     }
-  } catch {
+  } catch (error: unknown) {
+    if (formData.invitation_code.trim() !== code) return
+    console.error('Failed to validate invitation code:', error)
+    const msg = buildRegistrationErrorMessage(error, t('auth.invitationCodeValidateFailed'))
     invitationValidation.valid = false
-    invitationValidation.invalid = true
-    invitationValidation.message = t('auth.invitationCodeInvalid')
+    invitationValidation.invalid = false
+    invitationValidation.message = ''
+    invitationValidation.requestError = msg
+    errorMessage.value = msg
+    appStore.showError(msg)
   } finally {
     invitationValidating.value = false
   }
@@ -1014,6 +1041,21 @@ async function handleRegister(): Promise<void> {
       errorMessage.value = t('auth.promoCodeInvalidCannotRegister')
       return
     }
+    if (promoValidation.requestError) {
+      if (promoValidateTimeout) {
+        clearTimeout(promoValidateTimeout)
+        promoValidateTimeout = null
+      }
+      await validatePromoCodeDebounced(formData.promo_code.trim())
+      if (promoValidation.requestError) {
+        errorMessage.value = promoValidation.requestError
+        return
+      }
+      if (promoValidation.invalid || !promoValidation.valid) {
+        errorMessage.value = t('auth.promoCodeInvalidCannotRegister')
+        return
+      }
+    }
   }
 
   // Check invitation code validation status (if enabled and code provided)
@@ -1031,8 +1073,16 @@ async function handleRegister(): Promise<void> {
     // If invitation code is required but not validated yet
     if (formData.invitation_code.trim() && !invitationValidation.valid) {
       errorMessage.value = t('auth.invitationCodeValidating')
+      if (invitationValidateTimeout) {
+        clearTimeout(invitationValidateTimeout)
+        invitationValidateTimeout = null
+      }
       // Trigger validation
       await validateInvitationCodeDebounced(formData.invitation_code.trim())
+      if (invitationValidation.requestError) {
+        errorMessage.value = invitationValidation.requestError
+        return
+      }
       if (!invitationValidation.valid) {
         errorMessage.value = t('auth.invitationCodeInvalidCannotRegister')
         return
@@ -1109,11 +1159,23 @@ async function handleRegister(): Promise<void> {
 }
 
 function buildRegistrationErrorMessage(error: unknown, fallback: string): string {
-  if (extractApiErrorCode(error) === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
+  const code = extractApiErrorCode(error)
+  if (code === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
     return t('auth.emailDomainRegistrationLimit')
   }
-  if (extractApiErrorCode(error) === 'EMAIL_BLOCKED') {
+  if (code === 'EMAIL_BLOCKED') {
     return t('auth.errors.EMAIL_BLOCKED')
+  }
+  if (code === 'LOGIN_IP_BANNED') {
+    return t('auth.errors.LOGIN_IP_BANNED')
+  }
+  if (code === 'LOGIN_PROTECTION_UNAVAILABLE') {
+    return t('auth.errors.LOGIN_PROTECTION_UNAVAILABLE')
+  }
+  const err = (error || {}) as { status?: number; response?: { status?: number } }
+  const status = err.status ?? err.response?.status
+  if (status === 429) {
+    return t('auth.errors.RATE_LIMITED')
   }
   return buildAuthErrorMessage(error, { fallback })
 }

@@ -249,6 +249,24 @@ export default {
         saved: 'Panel rate limit settings saved',
         saveFailed: 'Failed to save panel rate limit settings'
       },
+      userAgentLimit: {
+        title: 'User-Agent Limit',
+        description: 'Limit the number of distinct client environments (User-Agent) a user can use within a rolling window to prevent multi-device account sharing',
+        dedupRuleNote: 'Deduplication ignores client, terminal, and build version upgrades (for example Codex Desktop/0.169.1 and 0.171.0 on the same OS version count as 1), while different OS versions, architectures, or client apps count separately. Existing recorded environments keep working; only new ones beyond the limit are rejected with HTTP 403.',
+        enabled: 'Enable User-Agent limit',
+        enabledHint: 'Track normalized User-Agents on gateway requests and block new clients once the limit is reached.',
+        maxUserAgents: 'Max User-Agents per user',
+        maxUserAgentsHint: 'Maximum distinct client environments allowed in the rolling window (1–1000). Can be overridden or exempted per user in Users management.',
+        windowDays: 'Rolling window',
+        windowDaysHint: 'Count client environments active within the last N days (1–365). Older inactive entries expire automatically.',
+        daysUnit: 'days',
+        countUnit: 'clients',
+        exemptAdmin: 'Exempt administrators',
+        exemptAdminHint: 'When enabled, admin accounts bypass the User-Agent limit by default while still recording active clients.',
+        invalidRange: 'Please enter a valid limit (1–1000) and rolling window (1–365 days)',
+        saved: 'User-Agent limit settings saved',
+        saveFailed: 'Failed to save User-Agent limit settings'
+      },
       turnstile: {
         title: 'Cloudflare Turnstile',
         description: 'Bot protection for login and registration',

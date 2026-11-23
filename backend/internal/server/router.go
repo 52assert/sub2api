@@ -39,6 +39,15 @@ func SetupRouter(
 	loginProtection *service.LoginProtectionService,
 ) *gin.Engine {
 	middleware2.SetIngressRejectRecorder(opsService)
+	if handlers != nil && handlers.Admin != nil && handlers.Admin.User != nil {
+		if limiter := handlers.Admin.User.CustomUserAgentLimitService(); limiter != nil {
+			middleware2.SetUserAgentLimiter(limiter)
+		} else {
+			middleware2.SetUserAgentLimiter(nil)
+		}
+	} else {
+		middleware2.SetUserAgentLimiter(nil)
+	}
 	// 缓存 iframe 页面的 origin 列表，用于动态注入 CSP frame-src
 	var cachedFrameOrigins atomic.Pointer[[]string]
 	emptyOrigins := []string{}

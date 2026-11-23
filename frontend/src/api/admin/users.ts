@@ -6,6 +6,33 @@
 import { apiClient } from '../client'
 import { listPlatformIds } from '@/constants/platformCatalog'
 import type { AccountPlatform, AdminUser, UpdateUserRequest, PaginatedResponse, ApiKey } from '@/types'
+import {
+  batchGetUserAgentSummaries,
+  getUserAgentLimitDetail,
+  updateUserAgentLimitPolicy,
+  deleteUserAgentRecord,
+  clearUserAgentRecords,
+  type UserAgentLimitSettings,
+  type UserAgentLimitUserSummary,
+  type UserAgentLimitUserPolicy,
+  type UserAgentLimitRecord,
+  type UserAgentLimitUserDetail,
+  type BatchUserAgentSummariesResponse,
+} from './userAgentLimit'
+
+export {
+  batchGetUserAgentSummaries,
+  getUserAgentLimitDetail,
+  updateUserAgentLimitPolicy,
+  deleteUserAgentRecord,
+  clearUserAgentRecords,
+  type UserAgentLimitSettings,
+  type UserAgentLimitUserSummary,
+  type UserAgentLimitUserPolicy,
+  type UserAgentLimitRecord,
+  type UserAgentLimitUserDetail,
+  type BatchUserAgentSummariesResponse,
+}
 
 export interface AdminBindAuthIdentityChannelRequest {
   channel: string
@@ -450,6 +477,11 @@ export const usersAPI = {
   getPlatformQuotas,
   updatePlatformQuotas,
   resetPlatformQuotaWindow,
+  batchGetUserAgentSummaries,
+  getUserAgentLimitDetail,
+  updateUserAgentLimitPolicy,
+  deleteUserAgentRecord,
+  clearUserAgentRecords,
 }
 
 export default usersAPI

@@ -249,6 +249,24 @@ export default {
         saved: '面板接口限流配置已保存',
         saveFailed: '保存面板接口限流配置失败'
       },
+      userAgentLimit: {
+        title: 'User-Agent 数量限制',
+        description: '限制单个用户在滚动时间窗口内可使用的客户端环境（User-Agent）数量，防止多设备/多人共享账号',
+        dedupRuleNote: '去重规则：自动忽略客户端、终端和构建版本号变化（如 Codex Desktop/0.169.1 与 0.171.0 同系统版本合并计数），但不同操作系统版本、架构或客户端类型分别计入。已录入的环境在超限后仍可继续使用，新环境将被 403 拦截。',
+        enabled: '启用 User-Agent 数量限制',
+        enabledHint: '开启后在网关请求鉴权时统计并拦截超出上限的新客户端环境。',
+        maxUserAgents: '单用户最大数量',
+        maxUserAgentsHint: '统计窗口内允许使用的不同客户端环境数量上限（1–1000），可在用户管理中对单用户覆盖或豁免。',
+        windowDays: '滚动统计窗口',
+        windowDaysHint: '统计近 N 天内活跃过的客户端环境（1–365 天）；超过该天数未活跃的环境会自动释放名额。',
+        daysUnit: '天',
+        countUnit: '个',
+        exemptAdmin: '管理员豁免',
+        exemptAdminHint: '开启后管理员账号默认不受 User-Agent 数量限制（仍可记录活跃客户端）。',
+        invalidRange: '请填写有效的数量上限（1–1000）与统计天数（1–365）',
+        saved: 'User-Agent 限制设置已保存',
+        saveFailed: '保存 User-Agent 限制设置失败'
+      },
       turnstile: {
         title: 'Cloudflare Turnstile',
         description: '登录和注册的机器人防护',

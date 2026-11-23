@@ -62,6 +62,7 @@ type SettingHandler struct {
 	notificationEmailService *service.NotificationEmailService
 	totpService              *service.TotpService
 	userService              *service.UserService
+	userAgentLimit           *service.CustomUserAgentLimitService
 }
 
 // NewSettingHandler 创建系统设置处理器
