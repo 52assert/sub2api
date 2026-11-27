@@ -757,6 +757,7 @@ export default {
       },
       columns: {
         user: '用户',
+        userNotes: '用户备注',
         group: '分组',
         usage: '用量',
         expires: '到期时间',

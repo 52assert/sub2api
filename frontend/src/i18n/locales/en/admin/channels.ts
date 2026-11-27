@@ -757,6 +757,7 @@ export default {
       },
       columns: {
         user: 'User',
+        userNotes: 'User Notes',
         group: 'Group',
         usage: 'Usage',
         expires: 'Expires',

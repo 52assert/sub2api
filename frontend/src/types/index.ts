@@ -2209,7 +2209,7 @@ export interface UserSubscription {
   updated_at: string
   revoked_at?: string | null
   expires_at: string | null
-  user?: User
+  user?: User & { notes?: string }
   group?: Group
 }
 

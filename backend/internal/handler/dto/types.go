@@ -799,7 +799,8 @@ type AdminUserSubscription struct {
 	AssignedAt time.Time `json:"assigned_at"`
 	Notes      string    `json:"notes"`
 
-	AssignedByUser *User `json:"assigned_by_user,omitempty"`
+	User           *AdminUser `json:"user,omitempty"`
+	AssignedByUser *User      `json:"assigned_by_user,omitempty"`
 }
 
 type BulkAssignResult struct {
