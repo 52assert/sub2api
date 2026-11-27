@@ -41,11 +41,13 @@ vi.mock('vue-i18n', async () => {
 })
 
 const DataTableStub = {
-  props: ['data'],
+  name: 'DataTable',
+  props: ['data', 'columns'],
   template: `
     <div>
       <div v-for="row in data" :key="row.id">
         <slot name="cell-user" :row="row" />
+        <div data-test="cell-user_notes"><slot name="cell-user_notes" :row="row" /></div>
       </div>
     </div>
   `
@@ -255,5 +257,60 @@ describe('admin subscription users', () => {
     const link = wrapper.getComponent(RouterLinkStub)
     expect(link.text()).toBe('User #42')
     expect(link.props('to')).toEqual({ path: '/admin/usage', query: { user_id: 42 } })
+  })
+
+  it('displays user notes in the user_notes column and falls back to dash when empty', async () => {
+    listSubscriptions.mockResolvedValue({
+      items: [
+        {
+          id: 9,
+          user_id: 42,
+          group_id: 3,
+          status: 'active',
+          starts_at: '2026-01-01T00:00:00Z',
+          expires_at: null,
+          daily_usage_usd: 0,
+          weekly_usage_usd: 0,
+          monthly_usage_usd: 0,
+          daily_window_start: null,
+          weekly_window_start: null,
+          monthly_window_start: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          user: { email: 'reader@example.com', username: 'Reader', notes: '核心大客户' }
+        },
+        {
+          id: 10,
+          user_id: 43,
+          group_id: 3,
+          status: 'active',
+          starts_at: '2026-01-01T00:00:00Z',
+          expires_at: null,
+          daily_usage_usd: 0,
+          weekly_usage_usd: 0,
+          monthly_usage_usd: 0,
+          daily_window_start: null,
+          weekly_window_start: null,
+          monthly_window_start: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          user: { email: 'nonote@example.com', username: 'NoNote' }
+        }
+      ],
+      total: 2,
+      pages: 1
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const tableCols = wrapper.getComponent({ name: 'DataTable' }).props('columns') as Array<{ key: string; label: string }>
+    expect(tableCols.some((c) => c.key === 'user_notes' && c.label === 'admin.subscriptions.columns.userNotes')).toBe(true)
+
+    const noteCells = wrapper.findAll('[data-test="cell-user_notes"]')
+    expect(noteCells).toHaveLength(2)
+    expect(noteCells[0]!.text()).toBe('核心大客户')
+    expect(noteCells[0]!.get('span').attributes('title')).toBe('核心大客户')
+    expect(noteCells[1]!.text()).toBe('-')
   })
 })

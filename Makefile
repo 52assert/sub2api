@@ -7,6 +7,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/account/__tests__/AccountTestModal.spec.ts \
 	src/components/admin/account/__tests__/AccountTestModal.spec.ts \
 	src/views/admin/__tests__/SubscriptionsView.expiration.spec.ts \
+	src/views/admin/__tests__/SubscriptionsView.userUsageLink.spec.ts \
 	src/api/__tests__/client.spec.ts \
 	src/api/__tests__/tokenRefresh.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \

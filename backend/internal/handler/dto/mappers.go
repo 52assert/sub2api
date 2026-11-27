@@ -77,6 +77,21 @@ func UserFromServiceAdmin(u *service.User) *AdminUser {
 	}
 }
 
+// UserFromServiceAdminShallow converts a service User to AdminUser without nested API keys or subscriptions.
+func UserFromServiceAdminShallow(u *service.User) *AdminUser {
+	base := UserFromServiceShallow(u)
+	if base == nil {
+		return nil
+	}
+	return &AdminUser{
+		User:                 *base,
+		Notes:                u.Notes,
+		LastUsedAt:           u.LastUsedAt,
+		GroupRates:           u.GroupRates,
+		RestrictPublicGroups: u.RestrictPublicGroups,
+	}
+}
+
 func APIKeyFromService(k *service.APIKey) *APIKey {
 	if k == nil {
 		return nil
@@ -562,6 +577,7 @@ func ProxyWithAccountCountFromService(p *service.ProxyWithAccountCount) *ProxyWi
 		QualityGrade:   p.QualityGrade,
 		QualitySummary: p.QualitySummary,
 		QualityChecked: p.QualityChecked,
+		LatencyChecked: p.LatencyChecked,
 	}
 }
 
@@ -607,6 +623,7 @@ func ProxyWithAccountCountFromServiceAdmin(p *service.ProxyWithAccountCount) *Ad
 		QualityGrade:   p.QualityGrade,
 		QualitySummary: p.QualitySummary,
 		QualityChecked: p.QualityChecked,
+		LatencyChecked: p.LatencyChecked,
 	}
 }
 
@@ -761,6 +778,28 @@ func UsageLogFromService(l *service.UsageLog) *UsageLog {
 	return &u
 }
 
+// ApplyResponseModel fills ResponseModel with the final response model of l
+// (upstream_response_model → upstream_model → model). It is left empty when the
+// final model equals the client-facing requested model, so users only ever see
+// "requested model" and "final response model", never the mapping chain.
+func (u *UsageLog) ApplyResponseModel(l *service.UsageLog) {
+	if u == nil || l == nil {
+		return
+	}
+	final := strings.TrimSpace(derefString(l.UpstreamResponseModel))
+	if final == "" {
+		final = strings.TrimSpace(derefString(l.UpstreamModel))
+	}
+	if final == "" {
+		final = strings.TrimSpace(l.Model)
+	}
+	if final == "" || final == u.Model {
+		u.ResponseModel = nil
+		return
+	}
+	u.ResponseModel = &final
+}
+
 // UsageLogFromServiceAdmin converts a service UsageLog to DTO for admin users.
 // It includes minimal Account info (ID, Name only) and IP address.
 func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
@@ -878,16 +917,19 @@ func UserSubscriptionFromService(sub *service.UserSubscription) *UserSubscriptio
 }
 
 // UserSubscriptionFromServiceAdmin converts a service UserSubscription to DTO for admin users.
-// It includes assignment metadata and notes.
+// It includes assignment metadata, notes, and admin user details (including user notes).
 func UserSubscriptionFromServiceAdmin(sub *service.UserSubscription) *AdminUserSubscription {
 	if sub == nil {
 		return nil
 	}
+	base := userSubscriptionFromServiceBase(sub)
+	base.User = nil
 	return &AdminUserSubscription{
-		UserSubscription: userSubscriptionFromServiceBase(sub),
+		UserSubscription: base,
 		AssignedBy:       sub.AssignedBy,
 		AssignedAt:       sub.AssignedAt,
 		Notes:            sub.Notes,
+		User:             UserFromServiceAdminShallow(sub.User),
 		AssignedByUser:   UserFromServiceShallow(sub.AssignedByUser),
 	}
 }

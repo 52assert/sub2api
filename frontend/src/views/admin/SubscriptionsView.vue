@@ -233,6 +233,19 @@
             </div>
           </template>
 
+          <template #cell-user_notes="{ row }">
+            <div class="max-w-[200px]">
+              <span
+                v-if="row.user?.notes"
+                :title="row.user.notes"
+                class="block truncate text-sm text-gray-600 dark:text-gray-400"
+              >
+                {{ row.user.notes }}
+              </span>
+              <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
+            </div>
+          </template>
+
           <template #cell-group="{ row }">
             <GroupBadge
               v-if="row.group"
@@ -988,6 +1001,7 @@ const allColumns = computed<Column[]>(() => [
       : t('admin.users.columns.username'),
     sortable: false
   },
+  { key: 'user_notes', label: t('admin.subscriptions.columns.userNotes'), sortable: false },
   { key: 'group', label: t('admin.subscriptions.columns.group'), sortable: false },
   { key: 'usage', label: t('admin.subscriptions.columns.usage'), sortable: false },
   { key: 'expires_at', label: t('admin.subscriptions.columns.expires'), sortable: true },
